@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { ALMOXARIFADOS, INITIAL_STATE } from './data/seed';
 
-const STORAGE_KEY = 'inventario-materiais-pwa-v3';
+const STORAGE_KEY = 'inventario-materiais-pwa-v4';
 
 const tabs = [
   { id: 'dashboard', label: 'Dashboard' },
@@ -18,7 +18,23 @@ const COUNT_TYPES = ['1ª contagem', '2ª contagem', '3ª contagem'];
 
 function loadState() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || INITIAL_STATE;
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (!saved) return INITIAL_STATE;
+
+    return {
+      ...INITIAL_STATE,
+      ...saved,
+      configuracoes: {
+        ...INITIAL_STATE.configuracoes,
+        ...(saved.configuracoes || {})
+      },
+      campanhas: saved.campanhas || INITIAL_STATE.campanhas,
+      equipes: saved.equipes || INITIAL_STATE.equipes,
+      itens: saved.itens || INITIAL_STATE.itens,
+      tarefas: saved.tarefas || INITIAL_STATE.tarefas,
+      registros: saved.registros || INITIAL_STATE.registros,
+      analises: saved.analises || INITIAL_STATE.analises
+    };
   } catch {
     return INITIAL_STATE;
   }
@@ -179,6 +195,8 @@ function openPrintWindow(title, htmlContent) {
           table { width: 100%; border-collapse: collapse; }
           th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; font-size: 11px; }
           th { background: #eff6ff; }
+          tbody tr:nth-child(even) { background: #f1f5f9; }
+          .num { text-align: center; }
           .space { height: 24px; }
           .footer-meta { position: fixed; left: 22px; right: 22px; bottom: 8px; font-size: 11px; color: #475569; display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid #cbd5e1; padding-top: 6px; }
         </style>
@@ -231,6 +249,11 @@ export default function App() {
   const teamsById = useMemo(() => Object.fromEntries(state.equipes.map((equipe) => [equipe.id, equipe])), [state.equipes]);
   const tasksById = useMemo(() => Object.fromEntries(state.tarefas.map((tarefa) => [tarefa.id, tarefa])), [state.tarefas]);
 
+  const openTasksForCounting = useMemo(
+    () => state.tarefas.filter((tarefa) => !['Concluída', 'Cancelada'].includes(tarefa.status)),
+    [state.tarefas]
+  );
+
   const registrosPorItem = useMemo(() => {
     const map = new Map();
     state.registros.forEach((registro) => {
@@ -277,12 +300,17 @@ export default function App() {
     };
   }, [state.itens, state.tarefas, itensComStatus, divergencias]);
 
-  const selectedTask = useMemo(() => state.tarefas.find((tarefa) => tarefa.id === currentTaskId) || state.tarefas[0] || null, [state.tarefas, currentTaskId]);
+  const selectedTask = useMemo(
+    () => openTasksForCounting.find((tarefa) => tarefa.id === currentTaskId) || openTasksForCounting[0] || null,
+    [openTasksForCounting, currentTaskId]
+  );
 
   useEffect(() => {
-    if (!currentTaskId && state.tarefas[0]) setCurrentTaskId(state.tarefas[0].id);
-    if (currentTaskId && !state.tarefas.some((tarefa) => tarefa.id === currentTaskId)) setCurrentTaskId(state.tarefas[0]?.id || '');
-  }, [state.tarefas, currentTaskId]);
+    if (!currentTaskId && openTasksForCounting[0]) setCurrentTaskId(openTasksForCounting[0].id);
+    if (currentTaskId && !openTasksForCounting.some((tarefa) => tarefa.id === currentTaskId)) {
+      setCurrentTaskId(openTasksForCounting[0]?.id || '');
+    }
+  }, [openTasksForCounting, currentTaskId]);
 
   const taskItems = useMemo(() => {
     if (!selectedTask) return [];
@@ -567,6 +595,55 @@ export default function App() {
     setActiveTab('tarefas');
   }
 
+
+  function getHistoricoContagens(itemId) {
+    const registros = [...(registrosPorItem.get(itemId) || [])].sort((a, b) => new Date(a.dataHoraRegistro) - new Date(b.dataHoraRegistro));
+    return {
+      primeira: registros[0]?.quantidadeContada ?? '',
+      segunda: registros[1]?.quantidadeContada ?? '',
+      terceira: registros[2]?.quantidadeContada ?? '',
+      ultimaClassificacao: registros[registros.length - 1]?.classificacao || 'Sem registro'
+    };
+  }
+
+  function generateRelatorioFinal() {
+    const rows = itensComStatus.map((item) => {
+      const historico = getHistoricoContagens(item.id);
+      const ultimaEquipe = item.ultimaTarefa?.equipeNome || '-';
+      return `
+        <tr>
+          <td>${item.codigoItem}</td>
+          <td>${item.descricaoItem}</td>
+          <td>${getAlmoxName(item.almoxarifadoId)}</td>
+          <td class="num">${formatNumber(item.saldoTeorico)}</td>
+          <td class="num">${historico.primeira === '' ? '' : formatNumber(historico.primeira)}</td>
+          <td class="num">${historico.segunda === '' ? '' : formatNumber(historico.segunda)}</td>
+          <td class="num">${historico.terceira === '' ? '' : formatNumber(historico.terceira)}</td>
+          <td>${historico.ultimaClassificacao}</td>
+          <td>${ultimaEquipe}</td>
+        </tr>`;
+    }).join('');
+
+    openPrintWindow('Relatório final de contagens', `
+      <div class="sheet">
+        <h2>Relatório final de todas as contagens</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Código</th><th>Descrição</th><th>Almox</th><th>Saldo teórico</th><th>1ª</th><th>2ª</th><th>3ª</th><th>Classificação final</th><th>Última equipe</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="footer-meta">
+        <span>Relatório final de todas as contagens</span>
+        <span>Campanha: ${campanhaAtual.nome}</span>
+        <span>Emitido em: ${new Date().toLocaleString('pt-BR')}</span>
+      </div>
+    `);
+  }
+
   function generateListaFisica() {
     const tasks = printOptions.tarefaId === 'todas' ? state.tarefas.filter((tarefa) => tarefa.status !== 'Cancelada') : state.tarefas.filter((tarefa) => tarefa.id === printOptions.tarefaId);
     const html = tasks.map((tarefa) => {
@@ -590,7 +667,7 @@ export default function App() {
                 <tr>
                   <td>${item.codigoItem}</td>
                   <td>${item.descricaoItem}</td>
-                  <td>${formatNumber(item.saldoTeorico)}</td>
+                  <td class="num">${formatNumber(item.saldoTeorico)}</td>
                   <td class="space"></td>
                   <td></td>
                 </tr>`).join('')}
@@ -625,6 +702,7 @@ export default function App() {
     setState(INITIAL_STATE);
     setImportInfo(null);
     setCountDrafts({});
+    setCurrentTaskId('');
   }
 
   return (
@@ -634,7 +712,7 @@ export default function App() {
           <span className="brand-badge">PWA</span>
           <div>
             <strong>Inventário Materiais</strong>
-            <small>V3 operacional</small>
+            <small>V4 operacional</small>
           </div>
         </div>
         <nav className="nav-list">
@@ -662,7 +740,9 @@ export default function App() {
           </div>
           <div className="topbar-info">
             <span className="pill">Status: {campanhaAtual.status}</span>
-            <span className="pill">Desvio aceitável: {state.configuracoes.desvioAceitavelUnidades} un / {state.configuracoes.desvioAceitavelPercentual}%</span>
+            <span className="pill">
+              Desvio aceitável: {state.configuracoes?.desvioAceitavelUnidades ?? 0} un / {state.configuracoes?.desvioAceitavelPercentual ?? 0}%
+            </span>
           </div>
         </header>
 
@@ -690,16 +770,44 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
+
               <div className="card">
                 <SectionTitle title="Parâmetros" description="Define o que é desvio admissível no inventário." />
                 <div className="form-grid">
                   <label>
                     Desvio admissível em unidades
-                    <input type="number" value={state.configuracoes.desvioAceitavelUnidades} onChange={(e) => updateState((prev) => ({ ...prev, configuracoes: { ...prev.configuracoes, desvioAceitavelUnidades: Number(e.target.value || 0) } }))} />
+                    <input
+                      type="number"
+                      value={state.configuracoes?.desvioAceitavelUnidades ?? 0}
+                      onChange={(e) =>
+                        updateState((prev) => ({
+                          ...prev,
+                          configuracoes: {
+                            ...INITIAL_STATE.configuracoes,
+                            ...(prev.configuracoes || {}),
+                            desvioAceitavelUnidades: Number(e.target.value || 0)
+                          }
+                        }))
+                      }
+                    />
                   </label>
+
                   <label>
-                    Desvio admissível em %
-                    <input type="number" value={state.configuracoes.desvioAceitavelPercentual} onChange={(e) => updateState((prev) => ({ ...prev, configuracoes: { ...prev.configuracoes, desvioAceitavelPercentual: Number(e.target.value || 0) } }))} />
+                    Desvio admissível em percentual
+                    <input
+                      type="number"
+                      value={state.configuracoes?.desvioAceitavelPercentual ?? 0}
+                      onChange={(e) =>
+                        updateState((prev) => ({
+                          ...prev,
+                          configuracoes: {
+                            ...INITIAL_STATE.configuracoes,
+                            ...(prev.configuracoes || {}),
+                            desvioAceitavelPercentual: Number(e.target.value || 0)
+                          }
+                        }))
+                      }
+                    />
                   </label>
                 </div>
               </div>
@@ -789,7 +897,7 @@ export default function App() {
               </form>
             </div>
             <div className="card">
-              <SectionTitle title="Tarefas abertas e concluídas" description="Exclusão de tarefas sem registros. Tarefas com registros podem ser canceladas." />
+              <SectionTitle title="Tarefas V4" description="Exclusão de tarefas sem registros. Tarefas com registros podem ser canceladas." />
               <div className="stack-list">
                 {state.tarefas.map((tarefa) => (
                   <div key={tarefa.id} className="stack-item">
@@ -801,7 +909,7 @@ export default function App() {
                     <div className="actions-cell">
                       {tarefa.status === 'Pendente' ? <button className="primary-btn" onClick={() => updateTaskStatus(tarefa.id, 'Em execução')}>Iniciar</button> : null}
                       {tarefa.status === 'Em execução' ? <button className="secondary-btn" onClick={() => updateTaskStatus(tarefa.id, 'Concluída')}>Concluir</button> : null}
-                      <button className="secondary-btn" onClick={() => { setCurrentTaskId(tarefa.id); setActiveTab('contagem'); }}>Abrir tabela</button>
+                      {!['Concluída', 'Cancelada'].includes(tarefa.status) ? <button className="secondary-btn" onClick={() => { setCurrentTaskId(tarefa.id); setActiveTab('contagem'); }}>Abrir tabela</button> : null}
                       <button className="danger-btn" onClick={() => deleteTask(tarefa.id)}>{state.registros.some((registro) => registro.tarefaId === tarefa.id) ? 'Cancelar' : 'Excluir'}</button>
                     </div>
                   </div>
@@ -813,7 +921,7 @@ export default function App() {
 
         {activeTab === 'contagem' && (
           <div className="card">
-            <SectionTitle title="Contagem em lista aberta" description="Permite lançar várias entradas de uma vez na mesma tabela." action={<label>Tarefa<select value={selectedTask?.id || ''} onChange={(e) => setCurrentTaskId(e.target.value)}>{state.tarefas.map((tarefa) => <option key={tarefa.id} value={tarefa.id}>{tarefa.titulo}</option>)}</select></label>} />
+            <SectionTitle title="Contagem em lista aberta" description="Permite lançar várias entradas de uma vez na mesma tabela. Tarefas concluídas saem desta lista." action={openTasksForCounting.length ? <label>Tarefa<select value={selectedTask?.id || ''} onChange={(e) => setCurrentTaskId(e.target.value)}>{openTasksForCounting.map((tarefa) => <option key={tarefa.id} value={tarefa.id}>{tarefa.titulo}</option>)}</select></label> : null} />
             {selectedTask ? (
               <>
                 <p><strong>Equipe:</strong> {selectedTask.equipeNome} | <strong>Integrantes:</strong> {selectedTask.equipeIntegrantes.join(', ')}</p>
@@ -873,11 +981,12 @@ export default function App() {
                 <label>Tarefa<select value={printOptions.tarefaId} onChange={(e) => setPrintOptions((prev) => ({ ...prev, tarefaId: e.target.value }))}><option value="todas">Todas as tarefas</option>{state.tarefas.map((tarefa) => <option key={tarefa.id} value={tarefa.id}>{tarefa.titulo}</option>)}</select></label>
                 <label className="checkbox-row"><input type="checkbox" checked={printOptions.incluirZerados} onChange={(e) => setPrintOptions((prev) => ({ ...prev, incluirZerados: e.target.checked }))} />Incluir zerados</label>
                 <label className="checkbox-row"><input type="checkbox" checked={printOptions.somenteDivergentes} onChange={(e) => setPrintOptions((prev) => ({ ...prev, somenteDivergentes: e.target.checked }))} />Somente divergentes</label>
-                <button className="primary-btn full-width" onClick={generateListaFisica}>Gerar PDF / impressão</button>
+                <button className="primary-btn full-width" onClick={generateListaFisica}>Gerar lista física</button>
+                <button className="secondary-btn full-width" onClick={generateRelatorioFinal}>Emitir relatório final</button>
               </div>
             </div>
             <div className="card">
-              <SectionTitle title="Resumo da V3" description="Principais entregas desta versão." />
+              <SectionTitle title="Resumo da V4" description="Correções e entregas desta versão." />
               <ul className="simple-list">
                 <li>• exclusão/cancelamento de tarefas</li>
                 <li>• contagem em tabela aberta com salvamento em lote</li>
@@ -886,7 +995,11 @@ export default function App() {
                 <li>• recontagem por outra equipe ou por equipe mista</li>
                 <li>• lista completa de integrantes</li>
                 <li>• divisão do mesmo almox sem repetir itens em tarefas abertas</li>
-                <li>• PDF com equipe responsável e rodapé otimizado</li>
+                <li>• PDF com equipe responsável, rodapé otimizado, linhas alternadas e saldo centralizado
+                </li>
+                <li>• relatório final de todas as contagens
+                </li>
+                <li>• tarefas concluídas saem da lista do menu Registrar contagem</li>
               </ul>
             </div>
           </section>
