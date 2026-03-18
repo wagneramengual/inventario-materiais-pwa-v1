@@ -2,12 +2,13 @@ import React, { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { ALMOXARIFADOS, INITIAL_STATE } from './data/seed';
 
-const STORAGE_KEY = 'inventario-materiais-pwa-v4';
+const STORAGE_KEY = 'inventario-materiais-pwa-v45';
 
 const tabs = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'equipes', label: 'Equipes' },
   { id: 'itens', label: 'Itens / Importação' },
+  { id: 'planejamento', label: 'Planejamento' },
   { id: 'tarefas', label: 'Tarefas' },
   { id: 'contagem', label: 'Contagem em tabela' },
   { id: 'divergencias', label: 'Divergências' },
@@ -221,7 +222,7 @@ export default function App() {
   const [selectedItemIds, setSelectedItemIds] = useState([]);
   const [countDrafts, setCountDrafts] = useState({});
   const [currentTaskId, setCurrentTaskId] = useState('');
-  const [teamForm, setTeamForm] = useState({ id: '', nome: '', responsavel: '', observacoes: '', integrantesTexto: '' });
+  const [teamForm, setTeamForm] = useState({ id: '', nome: '', observacoes: '', integrantesTexto: '' });
   const [taskForm, setTaskForm] = useState({
     titulo: '',
     almoxarifadoId: 'almox-001',
@@ -231,6 +232,11 @@ export default function App() {
     scope: 'almoxCompleto',
     equipeModo: 'fixa',
     integrantesMistos: []
+  });
+  const [planningForm, setPlanningForm] = useState({
+    almoxarifadoId: 'almox-001',
+    includeZeroItems: false,
+    selectedTeamIds: []
   });
   const [printOptions, setPrintOptions] = useState({ tarefaId: 'todas', incluirZerados: false, somenteDivergentes: false });
   const [importInfo, setImportInfo] = useState(null);
@@ -322,7 +328,7 @@ export default function App() {
   }
 
   function resetTeamForm() {
-    setTeamForm({ id: '', nome: '', responsavel: '', observacoes: '', integrantesTexto: '' });
+    setTeamForm({ id: '', nome: '', observacoes: '', integrantesTexto: '' });
   }
 
   function handleCreateOrUpdateTeam(event) {
@@ -331,7 +337,6 @@ export default function App() {
     const payload = {
       id: teamForm.id || uid('eq'),
       nome: teamForm.nome,
-      responsavel: teamForm.responsavel,
       observacoes: teamForm.observacoes,
       ativa: true,
       integrantes
@@ -347,7 +352,6 @@ export default function App() {
     setTeamForm({
       id: equipe.id,
       nome: equipe.nome,
-      responsavel: equipe.responsavel,
       observacoes: equipe.observacoes,
       integrantesTexto: buildMembersText(equipe.integrantes)
     });
@@ -378,6 +382,28 @@ export default function App() {
     );
   }
 
+  function openTaskTeamIds() {
+    return new Set(
+      state.tarefas
+        .filter((tarefa) => !['Concluída', 'Cancelada'].includes(tarefa.status) && tarefa.equipeId)
+        .map((tarefa) => tarefa.equipeId)
+    );
+  }
+
+  function splitItemsEqually(items, teamCount) {
+    if (!teamCount) return [];
+    const base = Math.floor(items.length / teamCount);
+    const remainder = items.length % teamCount;
+    const lots = [];
+    let start = 0;
+    for (let index = 0; index < teamCount; index += 1) {
+      const size = base + (index < remainder ? 1 : 0);
+      lots.push(items.slice(start, start + size));
+      start += size;
+    }
+    return lots.filter((lot) => lot.length);
+  }
+
   const availableItemsForTask = useMemo(() => {
     const base = itensComStatus.filter((item) => item.almoxarifadoId === taskForm.almoxarifadoId);
     const blocked = activeItemIdsInOpenTasks(taskForm.almoxarifadoId);
@@ -396,6 +422,97 @@ export default function App() {
   useEffect(() => {
     setSelectedItemIds([]);
   }, [taskForm.almoxarifadoId, taskForm.scope, taskForm.tipoContagem]);
+
+  const activeTeamsInOpenTasks = useMemo(() => openTaskTeamIds(), [state.tarefas]);
+
+  const planningEligibleTeams = useMemo(
+    () => state.equipes.filter((equipe) => equipe.ativa && !activeTeamsInOpenTasks.has(equipe.id)),
+    [state.equipes, activeTeamsInOpenTasks]
+  );
+
+  const planningAvailableItems = useMemo(() => {
+    const blocked = activeItemIdsInOpenTasks(planningForm.almoxarifadoId);
+    return itensComStatus
+      .filter((item) => item.almoxarifadoId === planningForm.almoxarifadoId)
+      .filter((item) => (planningForm.includeZeroItems ? true : !item.zerado))
+      .filter((item) => item.statusContagem === 'Pendente')
+      .filter((item) => !blocked.has(item.id))
+      .sort((a, b) => a.codigoItem.localeCompare(b.codigoItem));
+  }, [itensComStatus, planningForm]);
+
+  const planningPreviewLots = useMemo(() => {
+    const teams = planningForm.selectedTeamIds
+      .map((teamId) => teamsById[teamId])
+      .filter(Boolean);
+    const lots = splitItemsEqually(planningAvailableItems, teams.length);
+    return teams.map((team, index) => ({
+      team,
+      items: lots[index] || []
+    }));
+  }, [planningForm.selectedTeamIds, planningAvailableItems, teamsById]);
+
+
+  function togglePlanningTeam(teamId) {
+    setPlanningForm((prev) => ({
+      ...prev,
+      selectedTeamIds: prev.selectedTeamIds.includes(teamId)
+        ? prev.selectedTeamIds.filter((id) => id !== teamId)
+        : [...prev.selectedTeamIds, teamId]
+    }));
+  }
+
+  function generateTasksByPlanning() {
+    const selectedTeams = planningForm.selectedTeamIds
+      .map((teamId) => teamsById[teamId])
+      .filter(Boolean);
+
+    if (!selectedTeams.length) {
+      alert('Seleciona ao menos uma equipe para o almoxarifado.');
+      return;
+    }
+
+    if (selectedTeams.some((team) => activeTeamsInOpenTasks.has(team.id))) {
+      alert('Há equipe selecionada que já possui lista ativa. Cada equipe pode assumir apenas uma lista por vez.');
+      return;
+    }
+
+    if (!planningAvailableItems.length) {
+      alert('Não há itens pendentes e disponíveis para esse almoxarifado.');
+      return;
+    }
+
+    const lots = splitItemsEqually(planningAvailableItems, selectedTeams.length);
+    const tarefasNovas = selectedTeams.map((team, index) => ({
+      id: uid('tar'),
+      campanhaId: campanhaAtual.id,
+      almoxarifadoId: planningForm.almoxarifadoId,
+      titulo: `1ª contagem - ${getAlmoxName(planningForm.almoxarifadoId)} - ${team.nome}`,
+      tipoContagem: '1ª contagem',
+      status: 'Pendente',
+      dataInicio: '',
+      dataFim: '',
+      observacao: `Lote automático V4.5 gerado para ${team.nome}.`,
+      itemIds: (lots[index] || []).map((item) => item.id),
+      equipeId: team.id,
+      equipeNome: team.nome,
+      equipeTipo: 'fixa',
+      equipeIntegrantes: team.integrantes.map((item) => item.nome)
+    })).filter((tarefa) => tarefa.itemIds.length);
+
+    if (!tarefasNovas.length) {
+      alert('Não foi possível gerar lotes com os itens disponíveis.');
+      return;
+    }
+
+    updateState((prev) => ({
+      ...prev,
+      tarefas: [...tarefasNovas, ...prev.tarefas]
+    }));
+
+    setPrintOptions((prev) => ({ ...prev, tarefaId: 'todas' }));
+    setPlanningForm((prev) => ({ ...prev, selectedTeamIds: [] }));
+    setActiveTab('tarefas');
+  }
 
   function buildTaskTeamInfo() {
     if (taskForm.tipoContagem !== '1ª contagem' && taskForm.equipeModo === 'mista') {
@@ -433,6 +550,11 @@ export default function App() {
     }
     const teamInfo = buildTaskTeamInfo();
     if (!teamInfo) return;
+
+    if (taskForm.tipoContagem === '1ª contagem' && teamInfo.equipeId && activeTeamsInOpenTasks.has(teamInfo.equipeId)) {
+      alert('Cada equipe pode assumir apenas uma lista ativa por vez.');
+      return;
+    }
 
     if (taskForm.tipoContagem !== '1ª contagem' && teamInfo.equipeId) {
       const invalid = itemIds.some((itemId) => registrosPorItem.get(itemId)?.some((registro) => tasksById[registro.tarefaId]?.equipeId === teamInfo.equipeId));
@@ -712,7 +834,7 @@ export default function App() {
           <span className="brand-badge">PWA</span>
           <div>
             <strong>Inventário Materiais</strong>
-            <small>V4 operacional</small>
+            <small>V4.5 operacional</small>
           </div>
         </div>
         <nav className="nav-list">
@@ -821,7 +943,6 @@ export default function App() {
               <SectionTitle title={teamForm.id ? 'Editar equipe' : 'Cadastrar equipe'} description="Integrantes: um por linha, no formato Nome | Matrícula | Função." action={teamForm.id ? <button className="secondary-btn" onClick={resetTeamForm}>Cancelar</button> : null} />
               <form className="form-grid" onSubmit={handleCreateOrUpdateTeam}>
                 <label>Nome da equipe<input value={teamForm.nome} onChange={(e) => setTeamForm((prev) => ({ ...prev, nome: e.target.value }))} required /></label>
-                <label>Responsável<input value={teamForm.responsavel} onChange={(e) => setTeamForm((prev) => ({ ...prev, responsavel: e.target.value }))} required /></label>
                 <label className="full-width">Observações<input value={teamForm.observacoes} onChange={(e) => setTeamForm((prev) => ({ ...prev, observacoes: e.target.value }))} /></label>
                 <label className="full-width">Integrantes<textarea rows="7" value={teamForm.integrantesTexto} onChange={(e) => setTeamForm((prev) => ({ ...prev, integrantesTexto: e.target.value }))} /></label>
                 <button className="primary-btn full-width" type="submit">Salvar equipe</button>
@@ -833,7 +954,6 @@ export default function App() {
                 {state.equipes.map((equipe) => (
                   <div key={equipe.id} className="stack-item">
                     <div className="stack-item-header"><strong>{equipe.nome}</strong><span className="pill">{equipe.ativa ? 'Ativa' : 'Inativa'}</span></div>
-                    <p><strong>Responsável:</strong> {equipe.responsavel}</p>
                     <ul>
                       {equipe.integrantes.map((integrante) => <li key={integrante.id}>{integrante.nome} — {integrante.matriculaLogin || '-'} — {integrante.funcao}</li>)}
                     </ul>
@@ -872,6 +992,53 @@ export default function App() {
           </section>
         )}
 
+
+        {activeTab === 'planejamento' && (
+          <section className="two-column-grid">
+            <div className="card">
+              <SectionTitle title="Planejamento por almoxarifado" description="Define equipes por almoxarifado e gera automaticamente as listas sem repetir bens." />
+              <div className="form-grid">
+                <label>
+                  Almoxarifado
+                  <select value={planningForm.almoxarifadoId} onChange={(e) => setPlanningForm((prev) => ({ ...prev, almoxarifadoId: e.target.value, selectedTeamIds: [] }))}>
+                    {ALMOXARIFADOS.map((almox) => <option key={almox.id} value={almox.id}>{almox.nome}</option>)}
+                  </select>
+                </label>
+                <label className="checkbox-row">
+                  <input type="checkbox" checked={planningForm.includeZeroItems} onChange={(e) => setPlanningForm((prev) => ({ ...prev, includeZeroItems: e.target.checked }))} />
+                  Incluir itens zerados na divisão
+                </label>
+                <div className="full-width muted-text">Equipes livres para assumir nova lista: {planningEligibleTeams.length}</div>
+                <label className="full-width">Escolhe as equipes que vão atuar neste almoxarifado
+                  <div className="check-grid scroll-box">
+                    {planningEligibleTeams.length ? planningEligibleTeams.map((team) => (
+                      <label key={team.id} className="compact-check">
+                        <input type="checkbox" checked={planningForm.selectedTeamIds.includes(team.id)} onChange={() => togglePlanningTeam(team.id)} />
+                        {team.nome} <span className="muted-inline">({team.integrantes.length} integrantes)</span>
+                      </label>
+                    )) : <span className="muted-inline">Nenhuma equipe livre. Conclui ou cancela listas ativas para liberar equipes.</span>}
+                  </div>
+                </label>
+                <div className="full-width muted-text">Itens pendentes disponíveis para dividir: {planningAvailableItems.length}</div>
+                <button className="primary-btn full-width" onClick={generateTasksByPlanning}>Gerar tarefas e listas</button>
+              </div>
+            </div>
+            <div className="card">
+              <SectionTitle title="Prévia dos lotes" description="A divisão fica o mais equilibrada possível entre as equipes selecionadas." />
+              <div className="stack-list">
+                {planningPreviewLots.length ? planningPreviewLots.map(({ team, items }) => (
+                  <div key={team.id} className="stack-item">
+                    <div className="stack-item-header"><strong>{team.nome}</strong><span className="pill">{items.length} itens</span></div>
+                    <p><strong>Primeiro item:</strong> {items[0]?.codigoItem || '-'}</p>
+                    <p><strong>Último item:</strong> {items[items.length - 1]?.codigoItem || '-'}</p>
+                    <p><strong>Integrantes:</strong> {team.integrantes.map((item) => item.nome).join(', ')}</p>
+                  </div>
+                )) : <div className="empty-state">Seleciona as equipes para visualizar a divisão automática.</div>}
+              </div>
+            </div>
+          </section>
+        )}
+
         {activeTab === 'tarefas' && (
           <section className="two-column-grid">
             <div className="card">
@@ -882,11 +1049,11 @@ export default function App() {
                 <label>Almoxarifado<select value={taskForm.almoxarifadoId} onChange={(e) => setTaskForm((prev) => ({ ...prev, almoxarifadoId: e.target.value }))}>{ALMOXARIFADOS.map((almox) => <option key={almox.id} value={almox.id}>{almox.nome}</option>)}</select></label>
                 <label>Escopo<select value={taskForm.scope} onChange={(e) => setTaskForm((prev) => ({ ...prev, scope: e.target.value }))}><option value="almoxCompleto">Almoxarifado completo</option><option value="somentePendentes">Somente itens pendentes</option><option value="selecaoManual">Seleção manual</option></select></label>
                 {taskForm.tipoContagem === '1ª contagem' ? (
-                  <label className="full-width">Equipe<select value={taskForm.equipeId} onChange={(e) => setTaskForm((prev) => ({ ...prev, equipeId: e.target.value }))}>{state.equipes.filter((equipe) => equipe.ativa).map((equipe) => <option key={equipe.id} value={equipe.id}>{equipe.nome}</option>)}</select></label>
+                  <label className="full-width">Equipe<select value={taskForm.equipeId} onChange={(e) => setTaskForm((prev) => ({ ...prev, equipeId: e.target.value }))}>{state.equipes.filter((equipe) => equipe.ativa && (taskForm.tipoContagem !== '1ª contagem' || !activeTeamsInOpenTasks.has(equipe.id) || equipe.id === taskForm.equipeId)).map((equipe) => <option key={equipe.id} value={equipe.id}>{equipe.nome}</option>)}</select></label>
                 ) : (
                   <>
                     <label>Modo da equipe<select value={taskForm.equipeModo} onChange={(e) => setTaskForm((prev) => ({ ...prev, equipeModo: e.target.value }))}><option value="fixa">Outra equipe cadastrada</option><option value="mista">Equipe mista de recontagem</option></select></label>
-                    {taskForm.equipeModo === 'fixa' ? <label>Equipe<select value={taskForm.equipeId} onChange={(e) => setTaskForm((prev) => ({ ...prev, equipeId: e.target.value }))}><option value="">Selecione</option>{state.equipes.filter((equipe) => equipe.ativa).map((equipe) => <option key={equipe.id} value={equipe.id}>{equipe.nome}</option>)}</select></label> : null}
+                    {taskForm.equipeModo === 'fixa' ? <label>Equipe<select value={taskForm.equipeId} onChange={(e) => setTaskForm((prev) => ({ ...prev, equipeId: e.target.value }))}><option value="">Selecione</option>{state.equipes.filter((equipe) => equipe.ativa && (taskForm.tipoContagem !== '1ª contagem' || !activeTeamsInOpenTasks.has(equipe.id) || equipe.id === taskForm.equipeId)).map((equipe) => <option key={equipe.id} value={equipe.id}>{equipe.nome}</option>)}</select></label> : null}
                     {taskForm.equipeModo === 'mista' ? <label className="full-width">Integrantes mistos<div className="check-grid">{allMembers.map((member) => <label key={member.id} className="compact-check"><input type="checkbox" checked={taskForm.integrantesMistos.includes(member.id)} onChange={() => toggleMixedMember(member.id)} />{member.nome} <span className="muted-inline">({member.equipeNome})</span></label>)}</div></label> : null}
                   </>
                 )}
@@ -986,7 +1153,7 @@ export default function App() {
               </div>
             </div>
             <div className="card">
-              <SectionTitle title="Resumo da V4" description="Correções e entregas desta versão." />
+              <SectionTitle title="Resumo da V4.5" description="Correções e entregas desta versão." />
               <ul className="simple-list">
                 <li>• exclusão/cancelamento de tarefas</li>
                 <li>• contagem em tabela aberta com salvamento em lote</li>
@@ -998,6 +1165,8 @@ export default function App() {
                 <li>• PDF com equipe responsável, rodapé otimizado, linhas alternadas e saldo centralizado
                 </li>
                 <li>• relatório final de todas as contagens
+                </li>
+                <li>• planejamento por almoxarifado com divisão automática por equipes
                 </li>
                 <li>• tarefas concluídas saem da lista do menu Registrar contagem</li>
               </ul>
