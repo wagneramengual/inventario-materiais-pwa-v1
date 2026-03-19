@@ -20,24 +20,24 @@ const COUNT_TYPES = ['1ª contagem', '2ª contagem', '3ª contagem'];
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (!saved) return INITIAL_STATE;
+    if (!saved) return EMPTY_STATE;
 
     return {
-      ...INITIAL_STATE,
+      ...EMPTY_STATE,
       ...saved,
       configuracoes: {
-        ...INITIAL_STATE.configuracoes,
+        ...EMPTY_STATE.configuracoes,
         ...(saved.configuracoes || {})
       },
-      campanhas: saved.campanhas || INITIAL_STATE.campanhas,
-      equipes: saved.equipes || INITIAL_STATE.equipes,
-      itens: saved.itens || INITIAL_STATE.itens,
-      tarefas: saved.tarefas || INITIAL_STATE.tarefas,
-      registros: saved.registros || INITIAL_STATE.registros,
-      analises: saved.analises || INITIAL_STATE.analises
+      campanhas: saved.campanhas || EMPTY_STATE.campanhas,
+      equipes: saved.equipes || EMPTY_STATE.equipes,
+      itens: saved.itens || EMPTY_STATE.itens,
+      tarefas: saved.tarefas || EMPTY_STATE.tarefas,
+      registros: saved.registros || EMPTY_STATE.registros,
+      analises: saved.analises || EMPTY_STATE.analises
     };
   } catch {
-    return INITIAL_STATE;
+    return EMPTY_STATE;
   }
 }
 
