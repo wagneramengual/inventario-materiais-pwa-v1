@@ -15,12 +15,12 @@ const EMPTY_STATE = {
 
 const tabs = [
   { id: 'dashboard', label: 'Dashboard' },
-  { id: 'equipes', label: 'Equipes' },
   { id: 'itens', label: 'Itens / Importação' },
+  { id: 'equipes', label: 'Equipes' },
   { id: 'planejamento', label: 'Planejamento' },
   { id: 'tarefas', label: 'Tarefas' },
-  { id: 'contagem', label: 'Contagem em tabela' },
-  { id: 'divergencias', label: 'Divergências' },
+  { id: 'contagem', label: 'Registrar contagem' },
+  { id: 'divergencias', label: 'Validação / Recontagem' },
   { id: 'relatorios', label: 'PDF / Relatórios' }
 ];
 
@@ -238,7 +238,7 @@ export default function App() {
     equipeId: 'eq-1',
     tipoContagem: '1ª contagem',
     observacao: '',
-    scope: 'almoxCompleto',
+    scope: 'somentePendentes',
     equipeModo: 'fixa',
     integrantesMistos: []
   });
@@ -326,6 +326,15 @@ export default function App() {
       setCurrentTaskId(openTasksForCounting[0]?.id || '');
     }
   }, [openTasksForCounting, currentTaskId]);
+
+  useEffect(() => {
+    if (taskForm.equipeModo !== 'fixa') return;
+    if (manualEligibleTeams.some((equipe) => equipe.id === taskForm.equipeId)) return;
+    setTaskForm((prev) => ({
+      ...prev,
+      equipeId: manualEligibleTeams[0]?.id || ''
+    }));
+  }, [manualEligibleTeams, taskForm.equipeId, taskForm.equipeModo]);
 
   const taskItems = useMemo(() => {
     if (!selectedTask) return [];
@@ -420,7 +429,6 @@ export default function App() {
     if (taskForm.tipoContagem === '1ª contagem') {
       if (taskForm.scope === 'somentePendentes') available = available.filter((item) => item.statusContagem === 'Pendente');
       if (taskForm.scope === 'selecaoManual') available = available.filter((item) => selectedItemIds.includes(item.id));
-      if (taskForm.scope === 'almoxCompleto') available = available.filter((item) => !item.zerado);
     } else {
       available = divergencias.filter((item) => item.almoxarifadoId === taskForm.almoxarifadoId);
       if (taskForm.scope === 'selecaoManual') available = available.filter((item) => selectedItemIds.includes(item.id));
@@ -438,6 +446,16 @@ export default function App() {
     () => state.equipes.filter((equipe) => equipe.ativa && !activeTeamsInOpenTasks.has(equipe.id)),
     [state.equipes, activeTeamsInOpenTasks]
   );
+
+  const manualEligibleTeams = useMemo(() => (
+    state.equipes.filter((equipe) => {
+      if (!equipe.ativa) return false;
+      if (taskForm.tipoContagem === '1ª contagem') {
+        return !activeTeamsInOpenTasks.has(equipe.id) || equipe.id === taskForm.equipeId;
+      }
+      return true;
+    })
+  ), [state.equipes, taskForm.tipoContagem, taskForm.equipeId, activeTeamsInOpenTasks]);
 
   const planningAvailableItems = useMemo(() => {
     const blocked = activeItemIdsInOpenTasks(planningForm.almoxarifadoId);
@@ -828,36 +846,36 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
-function resetAll() {
-  const confirmed = window.confirm('Tem certeza que deseja apagar todos os dados locais do sistema?');
-  if (!confirmed) return;
+  function resetAll() {
+    const confirmed = window.confirm('Tem certeza que deseja apagar todos os dados locais do sistema?');
+    if (!confirmed) return;
 
-  const keysToRemove = [
-    'inventario-materiais-pwa-v3',
-    'inventario-materiais-pwa-v4',
-    'inventario-materiais-pwa-v45',
-    STORAGE_KEY
-  ];
+    const keysToRemove = [
+      'inventario-materiais-pwa-v3',
+      'inventario-materiais-pwa-v4',
+      'inventario-materiais-pwa-v45',
+      STORAGE_KEY
+    ];
 
-  [...new Set(keysToRemove)].forEach((key) => {
-    try {
-      localStorage.removeItem(key);
-    } catch {}
-  });
+    [...new Set(keysToRemove)].forEach((key) => {
+      try {
+        localStorage.removeItem(key);
+      } catch {}
+    });
 
-  setState(structuredClone(EMPTY_STATE));
-  setImportInfo(null);
-  setCountDrafts({});
-  setCurrentTaskId('');
-  setSelectedItemIds([]);
-  setPrintOptions({
-    tarefaId: 'todas',
-    incluirZerados: false,
-    somenteDivergentes: false
-  });
+    setState(structuredClone(EMPTY_STATE));
+    setImportInfo(null);
+    setCountDrafts({});
+    setCurrentTaskId('');
+    setSelectedItemIds([]);
+    setPrintOptions({
+      tarefaId: 'todas',
+      incluirZerados: false,
+      somenteDivergentes: false
+    });
 
-  window.location.reload();
-}
+    window.location.reload();
+  }
 
   return (
     <div className="app-shell">
@@ -1074,29 +1092,30 @@ function resetAll() {
         {activeTab === 'tarefas' && (
           <section className="two-column-grid">
             <div className="card">
-              <SectionTitle title="Criar tarefa" description="Permite dividir o mesmo almoxarifado entre várias equipes sem repetir bens em tarefas abertas." />
+              <SectionTitle title="Criar tarefa manual (uso excepcional)" description="Use esta tela apenas para ajustes pontuais. O fluxo principal de geração de listas agora fica em Planejamento." />
               <form className="form-grid" onSubmit={handleCreateTask}>
                 <label>Título<input value={taskForm.titulo} onChange={(e) => setTaskForm((prev) => ({ ...prev, titulo: e.target.value }))} /></label>
                 <label>Tipo de contagem<select value={taskForm.tipoContagem} onChange={(e) => setTaskForm((prev) => ({ ...prev, tipoContagem: e.target.value }))}>{COUNT_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
                 <label>Almoxarifado<select value={taskForm.almoxarifadoId} onChange={(e) => setTaskForm((prev) => ({ ...prev, almoxarifadoId: e.target.value }))}>{ALMOXARIFADOS.map((almox) => <option key={almox.id} value={almox.id}>{almox.nome}</option>)}</select></label>
-                <label>Escopo<select value={taskForm.scope} onChange={(e) => setTaskForm((prev) => ({ ...prev, scope: e.target.value }))}><option value="almoxCompleto">Almoxarifado completo</option><option value="somentePendentes">Somente itens pendentes</option><option value="selecaoManual">Seleção manual</option></select></label>
+                <label>Escopo<select value={taskForm.scope} onChange={(e) => setTaskForm((prev) => ({ ...prev, scope: e.target.value }))}><option value="somentePendentes">Itens pendentes disponíveis</option><option value="selecaoManual">Seleção manual</option></select></label>
                 {taskForm.tipoContagem === '1ª contagem' ? (
-                  <label className="full-width">Equipe<select value={taskForm.equipeId} onChange={(e) => setTaskForm((prev) => ({ ...prev, equipeId: e.target.value }))}>{state.equipes.filter((equipe) => equipe.ativa && (taskForm.tipoContagem !== '1ª contagem' || !activeTeamsInOpenTasks.has(equipe.id) || equipe.id === taskForm.equipeId)).map((equipe) => <option key={equipe.id} value={equipe.id}>{equipe.nome}</option>)}</select></label>
+                  <label className="full-width">Equipe<select value={taskForm.equipeId} onChange={(e) => setTaskForm((prev) => ({ ...prev, equipeId: e.target.value }))}><option value="">Selecione</option>{manualEligibleTeams.map((equipe) => <option key={equipe.id} value={equipe.id}>{equipe.nome}</option>)}</select></label>
                 ) : (
                   <>
                     <label>Modo da equipe<select value={taskForm.equipeModo} onChange={(e) => setTaskForm((prev) => ({ ...prev, equipeModo: e.target.value }))}><option value="fixa">Outra equipe cadastrada</option><option value="mista">Equipe mista de recontagem</option></select></label>
-                    {taskForm.equipeModo === 'fixa' ? <label>Equipe<select value={taskForm.equipeId} onChange={(e) => setTaskForm((prev) => ({ ...prev, equipeId: e.target.value }))}><option value="">Selecione</option>{state.equipes.filter((equipe) => equipe.ativa && (taskForm.tipoContagem !== '1ª contagem' || !activeTeamsInOpenTasks.has(equipe.id) || equipe.id === taskForm.equipeId)).map((equipe) => <option key={equipe.id} value={equipe.id}>{equipe.nome}</option>)}</select></label> : null}
+                    {taskForm.equipeModo === 'fixa' ? <label>Equipe<select value={taskForm.equipeId} onChange={(e) => setTaskForm((prev) => ({ ...prev, equipeId: e.target.value }))}><option value="">Selecione</option><option value="">Selecione</option>{manualEligibleTeams.map((equipe) => <option key={equipe.id} value={equipe.id}>{equipe.nome}</option>)}</select></label> : null}
                     {taskForm.equipeModo === 'mista' ? <label className="full-width">Integrantes mistos<div className="check-grid">{allMembers.map((member) => <label key={member.id} className="compact-check"><input type="checkbox" checked={taskForm.integrantesMistos.includes(member.id)} onChange={() => toggleMixedMember(member.id)} />{member.nome} <span className="muted-inline">({member.equipeNome})</span></label>)}</div></label> : null}
                   </>
                 )}
                 <label className="full-width">Observação<input value={taskForm.observacao} onChange={(e) => setTaskForm((prev) => ({ ...prev, observacao: e.target.value }))} /></label>
                 {taskForm.scope === 'selecaoManual' ? <label className="full-width">Itens do recorte<div className="check-grid scroll-box">{availableItemsForTask.length ? availableItemsForTask.map((item) => <label key={item.id} className="compact-check"><input type="checkbox" checked={selectedItemIds.includes(item.id)} onChange={() => setSelectedItemIds((prev) => prev.includes(item.id) ? prev.filter((id) => id !== item.id) : [...prev, item.id])} />{item.codigoItem} — {item.descricaoItem}</label>) : <span className="muted-inline">Nenhum item disponível.</span>}</div></label> : null}
-                <div className="full-width muted-text">Itens disponíveis para a tarefa: {availableItemsForTask.length}</div>
-                <button className="primary-btn full-width" type="submit">Criar tarefa</button>
+                <div className="full-width muted-text">Itens disponíveis para a tarefa manual: {availableItemsForTask.length}</div>
+                <div className="full-width muted-text">Cada equipe pode assumir apenas uma lista ativa por vez. Para divisão automática e equilibrada por almoxarifado, usa a aba Planejamento.</div>
+                <button className="primary-btn full-width" type="submit">Criar tarefa manual</button>
               </form>
             </div>
             <div className="card">
-              <SectionTitle title="Tarefas V4" description="Exclusão de tarefas sem registros. Tarefas com registros podem ser canceladas." />
+              <SectionTitle title="Tarefas geradas e acompanhamento" description="As tarefas criadas em Planejamento aparecem aqui para iniciar, concluir, abrir tabela e cancelar." />
               <div className="stack-list">
                 {state.tarefas.map((tarefa) => (
                   <div key={tarefa.id} className="stack-item">
