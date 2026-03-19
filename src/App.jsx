@@ -820,12 +820,39 @@ export default function App() {
   }
 
   function resetAll() {
-    localStorage.removeItem(STORAGE_KEY);
-    setState(INITIAL_STATE);
-    setImportInfo(null);
-    setCountDrafts({});
-    setCurrentTaskId('');
+  const confirmed = window.confirm('Tem certeza que deseja apagar todos os dados locais do sistema?');
+  if (!confirmed) return;
+
+  const keysToRemove = [
+    'inventario-materiais-pwa-v3',
+    'inventario-materiais-pwa-v4',
+    'inventario-materiais-pwa-v45',
+    STORAGE_KEY
+  ];
+
+  [...new Set(keysToRemove)].forEach((key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch {}
+  });
+
+  setState(structuredClone(INITIAL_STATE));
+  setImportInfo(null);
+  setCountDrafts({});
+  setCurrentTaskId('');
+
+  if (typeof setSelectedItemIds === 'function') setSelectedItemIds([]);
+  if (typeof setSelectedTeamIds === 'function') setSelectedTeamIds([]);
+  if (typeof setPrintOptions === 'function') {
+    setPrintOptions({
+      tarefaId: 'todas',
+      incluirZerados: false,
+      somenteDivergentes: false
+    });
   }
+
+  window.location.reload();
+}
 
   return (
     <div className="app-shell">
