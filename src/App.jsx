@@ -568,76 +568,105 @@ export default function App() {
     };
   }
 
-  function handleCreateTask(event) {
-    event.preventDefault();
-    const itemIds = availableItemsForTask.map((item) => item.id);
-    if (!itemIds.length) {
-      alert('Nenhum item disponível para esse recorte.');
-      return;
-    }
-    const teamInfo = buildTaskTeamInfo();
-    if (!teamInfo) return;
+function handleCreateTask(event) {
+  event.preventDefault();
+  const itemIds = availableItemsForTask.map((item) => item.id);
 
-    if (taskForm.tipoContagem === '1ª contagem' && teamInfo.equipeId && activeTeamsInOpenTasks.has(teamInfo.equipeId)) {
-      alert('Cada equipe pode assumir apenas uma lista ativa por vez.');
-      return;
-    }
-
-    if (taskForm.tipoContagem !== '1ª contagem' && teamInfo.equipeId) {
-      const invalid = itemIds.some((itemId) => registrosPorItem.get(itemId)?.some((registro) => tasksById[registro.tarefaId]?.equipeId === teamInfo.equipeId));
-      if (invalid) {
-        alert('Recontagem deve ser feita por outra equipe. Escolhe outra equipe ou usa equipe mista.');
-        return;
-      }
-    }
-
-    const tarefa = {
-      id: uid('tar'),
-      campanhaId: campanhaAtual.id,
-      almoxarifadoId: taskForm.almoxarifadoId,
-      titulo: taskForm.titulo || `${taskForm.tipoContagem} - ${getAlmoxName(taskForm.almoxarifadoId)}`,
-      tipoContagem: taskForm.tipoContagem,
-      status: 'Pendente',
-      dataInicio: '',
-      dataFim: '',
-      observacao: taskForm.observacao,
-      itemIds,
-      ...teamInfo
-    };
-
-    updateState((prev) => ({ ...prev, tarefas: [tarefa, ...prev.tarefas] }));
-    setTaskForm((prev) => ({ ...prev, titulo: '', observacao: '', integrantesMistos: [] }));
-    setCurrentTaskId(tarefa.id);
-    setActiveTab('tarefas');
+  if (!itemIds.length) {
+    alert('Nenhum item disponível para esse recorte.');
+    return;
   }
 
-  function updateTaskStatus(taskId, status) {
-    updateState((prev) => ({
-      ...prev,
-      tarefas: prev.tarefas.map((tarefa) => {
-        if (tarefa.id !== taskId) return tarefa;
-        return {
-          ...tarefa,
-          status,
-          dataInicio: status === 'Em execução' ? tarefa.dataInicio || new Date().toISOString() : tarefa.dataInicio,
-          dataFim: status === 'Concluída' ? new Date().toISOString() : status === 'Cancelada' ? '' : tarefa.dataFim
-        };
-      })
-    }));
+  const teamInfo = buildTaskTeamInfo();
+  if (!teamInfo) return;
+
+  if (taskForm.tipoContagem === '1ª contagem' && teamInfo.equipeId && activeTeamsInOpenTasks.has(teamInfo.equipeId)) {
+    alert('Cada equipe pode assumir apenas uma lista ativa por vez.');
+    return;
   }
 
-  function deleteTask(taskId) {
-    const task = tasksById[taskId];
-    if (!task) return;
-    const hasRecords = state.registros.some((registro) => registro.tarefaId === taskId);
-    if (hasRecords) {
-      if (!window.confirm('Essa tarefa já possui registros. Deseja cancelar a tarefa em vez de excluir?')) return;
-      updateTaskStatus(taskId, 'Cancelada');
+  if (taskForm.tipoContagem !== '1ª contagem' && teamInfo.equipeId) {
+    const invalid = itemIds.some((itemId) =>
+      registrosPorItem.get(itemId)?.some(
+        (registro) => tasksById[registro.tarefaId]?.equipeId === teamInfo.equipeId
+      )
+    );
+
+    if (invalid) {
+      alert('Recontagem deve ser feita por outra equipe. Escolhe outra equipe ou usa equipe mista.');
       return;
     }
-    if (!window.confirm('Excluir tarefa sem registros?')) return;
-    updateState((prev) => ({ ...prev, tarefas: prev.tarefas.filter((tarefa) => tarefa.id !== taskId) }));
   }
+
+  const tarefa = {
+    id: uid('tar'),
+    campanhaId: campanhaAtual.id,
+    almoxarifadoId: taskForm.almoxarifadoId,
+    titulo: taskForm.titulo || `${taskForm.tipoContagem} - ${getAlmoxName(taskForm.almoxarifadoId)}`,
+    tipoContagem: taskForm.tipoContagem,
+    status: 'Pendente',
+    dataInicio: '',
+    dataFim: '',
+    observacao: taskForm.observacao,
+    itemIds,
+    ...teamInfo
+  };
+
+  updateState((prev) => ({
+    ...prev,
+    tarefas: [tarefa, ...prev.tarefas]
+  }));
+
+  setTaskForm((prev) => ({
+    ...prev,
+    titulo: '',
+    observacao: '',
+    integrantesMistos: []
+  }));
+
+  setCurrentTaskId(tarefa.id);
+  setActiveTab('tarefas');
+}
+
+function updateTaskStatus(taskId, status) {
+  updateState((prev) => ({
+    ...prev,
+    tarefas: prev.tarefas.map((tarefa) => {
+      if (tarefa.id !== taskId) return tarefa;
+      return {
+        ...tarefa,
+        status,
+        dataInicio: status === 'Em execução' ? tarefa.dataInicio || new Date().toISOString() : tarefa.dataInicio,
+        dataFim:
+          status === 'Concluída'
+            ? new Date().toISOString()
+            : status === 'Cancelada'
+              ? ''
+              : tarefa.dataFim
+      };
+    })
+  }));
+}
+
+function deleteTask(taskId) {
+  const task = tasksById[taskId];
+  if (!task) return;
+
+  const hasRecords = state.registros.some((registro) => registro.tarefaId === taskId);
+
+  if (hasRecords) {
+    if (!window.confirm('Essa tarefa já possui registros. Deseja cancelar a tarefa em vez de excluir?')) return;
+    updateTaskStatus(taskId, 'Cancelada');
+    return;
+  }
+
+  if (!window.confirm('Excluir tarefa sem registros?')) return;
+
+  updateState((prev) => ({
+    ...prev,
+    tarefas: prev.tarefas.filter((tarefa) => tarefa.id !== taskId)
+  }));
+}
 
   function handleImportFile(event) {
     const file = event.target.files?.[0];
