@@ -4,6 +4,15 @@ import { ALMOXARIFADOS, INITIAL_STATE } from './data/seed';
 
 const STORAGE_KEY = 'inventario-materiais-pwa-v45';
 
+const EMPTY_STATE = {
+  ...structuredClone(INITIAL_STATE),
+  equipes: [],
+  itens: [],
+  tarefas: [],
+  registros: [],
+  analises: []
+};
+
 const tabs = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'equipes', label: 'Equipes' },
@@ -214,7 +223,7 @@ function openPrintWindow(title, htmlContent) {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [state, setState] = useState(INITIAL_STATE);
+  const [state, setState] = useState(EMPTY_STATE);
   const [showZeroItems, setShowZeroItems] = useState(false);
   const [almoxFilter, setAlmoxFilter] = useState('todos');
   const [itemFilter, setItemFilter] = useState('todos');
@@ -819,7 +828,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
-  function resetAll() {
+function resetAll() {
   const confirmed = window.confirm('Tem certeza que deseja apagar todos os dados locais do sistema?');
   if (!confirmed) return;
 
@@ -836,20 +845,16 @@ export default function App() {
     } catch {}
   });
 
-  setState(structuredClone(INITIAL_STATE));
+  setState(structuredClone(EMPTY_STATE));
   setImportInfo(null);
   setCountDrafts({});
   setCurrentTaskId('');
-
-  if (typeof setSelectedItemIds === 'function') setSelectedItemIds([]);
-  if (typeof setSelectedTeamIds === 'function') setSelectedTeamIds([]);
-  if (typeof setPrintOptions === 'function') {
-    setPrintOptions({
-      tarefaId: 'todas',
-      incluirZerados: false,
-      somenteDivergentes: false
-    });
-  }
+  setSelectedItemIds([]);
+  setPrintOptions({
+    tarefaId: 'todas',
+    incluirZerados: false,
+    somenteDivergentes: false
+  });
 
   window.location.reload();
 }
