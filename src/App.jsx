@@ -327,15 +327,6 @@ export default function App() {
     }
   }, [openTasksForCounting, currentTaskId]);
 
-  useEffect(() => {
-    if (taskForm.equipeModo !== 'fixa') return;
-    if (manualEligibleTeams.some((equipe) => equipe.id === taskForm.equipeId)) return;
-    setTaskForm((prev) => ({
-      ...prev,
-      equipeId: manualEligibleTeams[0]?.id || ''
-    }));
-  }, [manualEligibleTeams, taskForm.equipeId, taskForm.equipeModo]);
-
   const taskItems = useMemo(() => {
     if (!selectedTask) return [];
     return itensComStatus.filter((item) => selectedTask.itemIds?.includes(item.id));
@@ -456,6 +447,17 @@ export default function App() {
       return true;
     })
   ), [state.equipes, taskForm.tipoContagem, taskForm.equipeId, activeTeamsInOpenTasks]);
+
+
+  useEffect(() => {
+    if (taskForm.equipeModo !== 'fixa') return;
+    if (manualEligibleTeams.some((equipe) => equipe.id === taskForm.equipeId)) return;
+
+    setTaskForm((prev) => ({
+      ...prev,
+      equipeId: manualEligibleTeams[0]?.id || ''
+    }));
+  }, [manualEligibleTeams, taskForm.equipeId, taskForm.equipeModo]);
 
   const planningAvailableItems = useMemo(() => {
     const blocked = activeItemIdsInOpenTasks(planningForm.almoxarifadoId);
