@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { ALMOXARIFADOS, INITIAL_STATE } from './data/seed';
 
-const STORAGE_KEY = 'inventario-materiais-pwa-v45';
+const STORAGE_KEY = 'inventario-materiais-pwa-v46';
 
 const EMPTY_STATE = {
   ...structuredClone(INITIAL_STATE),
@@ -24,7 +24,7 @@ const tabs = [
   { id: 'relatorios', label: 'PDF / Relatórios' }
 ];
 
-const COUNT_TYPES = ['1ª contagem', '2ª contagem', '3ª contagem'];
+const COUNT_TYPES = ['1ª contagem', '2ª contagem', '3ª contagem', 'Recontagem'];
 
 function loadState() {
   try {
@@ -199,16 +199,24 @@ function openPrintWindow(title, htmlContent) {
       <head>
         <title>${title}</title>
         <style>
-          body { font-family: Arial, sans-serif; padding: 18px 22px 52px; color: #111827; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          @page { margin: 16mm 10mm 18mm; }
+          body { font-family: Arial, sans-serif; padding: 18px 22px 78px; color: #111827; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           h1,h2,h3 { margin: 0 0 10px; }
-          .sheet { margin-bottom: 24px; page-break-inside: avoid; }
+          .sheet { margin-bottom: 28px; page-break-inside: avoid; }
+          .sheet:last-of-type { margin-bottom: 72px; }
           table { width: 100%; border-collapse: collapse; }
           th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; font-size: 11px; }
           th { background: #eff6ff; }
-          tbody tr:nth-child(even) { background: #f1f5f9 !important; }
+          tbody tr:nth-child(even) td { background: #f1f5f9 !important; }
+          tbody tr:nth-child(odd) td { background: #ffffff !important; }
           .num { text-align: center; }
           .space { height: 24px; }
-          .footer-meta { position: fixed; left: 22px; right: 22px; bottom: 8px; font-size: 11px; color: #475569; display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid #cbd5e1; padding-top: 6px; }
+          .signature-block { margin-top: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+          .signature-line { border-top: 1px solid #111827; padding-top: 6px; font-size: 11px; min-height: 24px; }
+          .footer-meta { position: fixed; left: 22px; right: 22px; bottom: 8px; font-size: 11px; color: #475569; display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid #cbd5e1; padding-top: 6px; background: #fff; }
+          @media print {
+            body { padding-bottom: 80px; }
+          }
         </style>
       </head>
       <body>
@@ -248,8 +256,9 @@ export default function App() {
     includeZeroItems: false,
     selectedTeamIds: []
   });
-  const [printOptions, setPrintOptions] = useState({ tarefaId: 'todas', incluirZerados: false, somenteDivergentes: false });
+  const [printOptions, setPrintOptions] = useState({ tarefaId: 'todas', incluirZerados: false, somenteDivergentes: false, mostrarSaldoTeorico: true });
   const [importInfo, setImportInfo] = useState(null);
+  const [validationFilter, setValidationFilter] = useState('todas');
 
   useEffect(() => {
     setState(loadState());
@@ -281,9 +290,12 @@ export default function App() {
     return map;
   }, [state.registros]);
 
+  const analisesByItem = useMemo(() => Object.fromEntries(state.analises.map((analise) => [analise.itemId, analise])), [state.analises]);
+
   const itensComStatus = useMemo(() => state.itens.map((item) => {
     const registros = registrosPorItem.get(item.id) || [];
     const ultimoRegistro = registros[registros.length - 1];
+    const analise = analisesByItem[item.id];
     return {
       ...item,
       codigoItem: formatCode(item.codigoItem),
@@ -291,11 +303,27 @@ export default function App() {
       statusContagem: ultimoRegistro ? 'Contado' : 'Pendente',
       diferencaAtual: ultimoRegistro?.diferenca ?? null,
       classificacaoAtual: ultimoRegistro?.classificacao || 'Sem registro',
-      ultimaTarefa: ultimoRegistro ? tasksById[ultimoRegistro.tarefaId] : null
+      ultimaTarefa: ultimoRegistro ? tasksById[ultimoRegistro.tarefaId] : null,
+      situacaoValidacao: analise?.situacaoDocumental || 'Pendente de verificação'
     };
-  }), [state.itens, registrosPorItem, tasksById]);
+  }), [state.itens, registrosPorItem, tasksById, analisesByItem]);
 
-  const divergencias = useMemo(() => itensComStatus.filter((item) => ['Diferença admissível', 'Diferença crítica'].includes(item.classificacaoAtual)), [itensComStatus]);
+  const divergencias = useMemo(
+    () =>
+      itensComStatus.filter(
+        (item) =>
+          ['Diferença admissível', 'Diferença crítica'].includes(item.classificacaoAtual) &&
+          !['Validado', 'Em recontagem'].includes(item.situacaoValidacao)
+      ),
+    [itensComStatus]
+  );
+
+  const filteredDivergencias = useMemo(() => {
+    if (validationFilter === 'todas') return divergencias;
+    if (validationFilter === 'criticas') return divergencias.filter((item) => item.classificacaoAtual === 'Diferença crítica');
+    if (validationFilter === 'admissiveis') return divergencias.filter((item) => item.classificacaoAtual === 'Diferença admissível');
+    return divergencias;
+  }, [divergencias, validationFilter]);
 
   const dashboard = useMemo(() => {
     const totalItens = state.itens.length;
@@ -646,7 +674,8 @@ function updateTaskStatus(taskId, status) {
             ? new Date().toISOString()
             : status === 'Cancelada'
               ? ''
-              : tarefa.dataFim
+              : tarefa.dataFim,
+        dataValidacao: status === 'Concluída' ? new Date().toISOString() : tarefa.dataValidacao
       };
     })
   }));
@@ -755,9 +784,9 @@ function deleteTask(taskId) {
       }
     });
 
-    updateState((prev) => ({ ...prev, registros: [...novosRegistros, ...prev.registros], analises: novasAnalises }));
+    updateState((prev) => ({ ...prev, registros: [...novosRegistros, ...prev.registros], analises: novasAnalises, tarefas: prev.tarefas.map((tarefa) => tarefa.id === selectedTask.id ? { ...tarefa, status: 'Aguardando validação', dataEnvioContagem: new Date().toISOString(), origemLancamento: tarefa.origemLancamento || 'chefe_inventario' } : tarefa) }));
     setCountDrafts({});
-    if (selectedTask.status === 'Pendente') updateTaskStatus(selectedTask.id, 'Em execução');
+
   }
 
   function toggleRecountSelection(itemId) {
@@ -766,17 +795,55 @@ function deleteTask(taskId) {
     ));
   }
 
-  function prepareBatchRecount(itemIds = []) {
+  function selectAllDivergencias() {
+    setSelectedRecountItemIds(filteredDivergencias.map((item) => item.id));
+  }
+
+  function selectCriticalDivergencias() {
+    setSelectedRecountItemIds(filteredDivergencias.filter((item) => item.classificacaoAtual === 'Diferença crítica').map((item) => item.id));
+  }
+
+  function clearDivergenceSelection() {
+    setSelectedRecountItemIds([]);
+  }
+
+  function applyValidationToItems(itemIds = [], action = 'validar') {
     const ids = itemIds.length ? itemIds : selectedRecountItemIds;
     const items = divergencias.filter((item) => ids.includes(item.id));
     if (!items.length) {
-      alert('Seleciona ao menos um item divergente para preparar a recontagem.');
+      alert(action === 'validar' ? 'Seleciona ao menos um item para validar.' : 'Seleciona ao menos um item divergente para solicitar recontagem.');
+      return;
+    }
+
+    if (action === 'validar') {
+      updateState((prev) => ({
+        ...prev,
+        analises: items.reduce((acc, item) => {
+          const existing = acc.find((analise) => analise.itemId === item.id);
+          if (existing) {
+            existing.analiseFinal = 'Contagem validada pelo chefe de inventário.';
+            existing.situacaoDocumental = 'Validado';
+            existing.observacaoGerencial = 'Item validado sem necessidade de nova lista.';
+            return acc;
+          }
+          acc.push({
+            id: uid('an'),
+            itemId: item.id,
+            preAnalise: `Validação da ${item.ultimaTarefa?.tipoContagem || 'contagem'}.`,
+            analiseFinal: 'Contagem validada pelo chefe de inventário.',
+            situacaoDocumental: 'Validado',
+            observacaoGerencial: 'Item validado sem necessidade de nova lista.'
+          });
+          return acc;
+        }, [...prev.analises])
+      }));
+      setSelectedRecountItemIds([]);
       return;
     }
 
     const sameAlmox = new Set(items.map((item) => item.almoxarifadoId));
     if (sameAlmox.size > 1) {
-      alert('A preparação da recontagem em lote deve ser feita com itens de um mesmo almoxarifado.');
+      alert('Solicita a recontagem por almoxarifado. Seleciona itens de um mesmo almoxarifado.');
       return;
     }
 
@@ -788,16 +855,14 @@ function deleteTask(taskId) {
         .filter(Boolean)
     );
 
-    const fallbackTeam = state.equipes.find((equipe) => equipe.ativa && !usedTeamIds.has(equipe.id));
+    const fallbackTeam = state.equipes.find((equipe) => equipe.ativa && !usedTeamIds.has(equipe.id) && !activeTeamsInOpenTasks.has(equipe.id));
     const orderedItems = [...items].sort((a, b) => a.codigoItem.localeCompare(b.codigoItem));
-    const tipos = orderedItems.map((item) => item.ultimaTarefa?.tipoContagem).filter(Boolean);
-    const nextType = tipos.includes('2ª contagem') || tipos.includes('3ª contagem') ? '3ª contagem' : '2ª contagem';
 
     setTaskForm({
       titulo: `Recontagem - ${getAlmoxName(targetAlmox)}`,
       almoxarifadoId: targetAlmox,
       equipeId: fallbackTeam?.id || '',
-      tipoContagem: nextType,
+      tipoContagem: 'Recontagem',
       observacao: `Recontagem em lote com ${orderedItems.length} item(ns) divergente(s).`,
       scope: 'selecaoManual',
       equipeModo: fallbackTeam ? 'fixa' : 'mista',
@@ -805,9 +870,29 @@ function deleteTask(taskId) {
     });
     setSelectedItemIds(orderedItems.map((item) => item.id));
     setSelectedRecountItemIds(orderedItems.map((item) => item.id));
+    updateState((prev) => ({
+      ...prev,
+      analises: orderedItems.reduce((acc, item) => {
+        const existing = acc.find((analise) => analise.itemId === item.id);
+        if (existing) {
+          existing.analiseFinal = '';
+          existing.situacaoDocumental = 'Em recontagem';
+          existing.observacaoGerencial = 'Lote enviado para recontagem.';
+          return acc;
+        }
+        acc.push({
+          id: uid('an'),
+          itemId: item.id,
+          preAnalise: `Divergência identificada na ${item.ultimaTarefa?.tipoContagem || 'contagem'}.`,
+          analiseFinal: '',
+          situacaoDocumental: 'Em recontagem',
+          observacaoGerencial: 'Lote enviado para recontagem.'
+        });
+        return acc;
+      }, [...prev.analises])
+    }));
     setActiveTab('tarefas');
   }
-
 
   function getHistoricoContagens(itemId) {
     const registros = [...(registrosPorItem.get(itemId) || [])].sort((a, b) => new Date(a.dataHoraRegistro) - new Date(b.dataHoraRegistro));
@@ -844,7 +929,7 @@ function deleteTask(taskId) {
     const groups = buildRelatorioFinalRows();
     const html = groups.map(({ almox, items }) => `
       <div class="sheet">
-        <h2>${almox.nome}</h2>
+        <h2>${almox.codigoCompleto} — ${almox.nome}</h2>
         <table>
           <thead>
             <tr>
@@ -881,7 +966,7 @@ function deleteTask(taskId) {
     const groups = buildRelatorioFinalRows();
     const rows = groups.flatMap(({ almox, items }) => (
       items.map((item) => ({
-        Almoxarifado: almox.nome,
+        Almoxarifado: `${almox.codigoCompleto} — ${almox.nome}`,
         Código: item.codigo,
         Descrição: item.descricao,
         'Saldo teórico': item.saldoTeorico,
@@ -908,12 +993,12 @@ function deleteTask(taskId) {
       return `
         <div class="sheet">
           <h2>${tarefa.titulo}</h2>
-          <div><strong>Almoxarifado:</strong> ${getAlmoxName(tarefa.almoxarifadoId)} &nbsp; | &nbsp; <strong>Equipe:</strong> ${tarefa.equipeNome}</div>
+          <div><strong>Almoxarifado:</strong> ${ALMOXARIFADOS.find((almox) => almox.id === tarefa.almoxarifadoId)?.codigoCompleto || ''} — ${getAlmoxName(tarefa.almoxarifadoId)} &nbsp; | &nbsp; <strong>Equipe:</strong> ${tarefa.equipeNome}</div>
           <div><strong>Integrantes:</strong> ${tarefa.equipeIntegrantes.join(', ')}</div>
           <table>
             <thead>
               <tr>
-                <th>Código</th><th>Descrição</th><th>Saldo teórico</th><th>Contagem</th><th>Observações</th>
+                <th>Código</th><th>Descrição</th>${printOptions.mostrarSaldoTeorico ? '<th>Saldo teórico</th>' : ''}<th>Contagem</th><th>Observações</th>
               </tr>
             </thead>
             <tbody>
@@ -921,12 +1006,16 @@ function deleteTask(taskId) {
                 <tr style="background:${index % 2 === 0 ? '#ffffff' : '#f1f5f9'}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">
                   <td>${item.codigoItem}</td>
                   <td>${item.descricaoItem}</td>
-                  <td class="num">${formatNumber(item.saldoTeorico)}</td>
+                  ${printOptions.mostrarSaldoTeorico ? `<td class="num">${formatNumber(item.saldoTeorico)}</td>` : ''}
                   <td class="space"></td>
                   <td></td>
                 </tr>`).join('')}
             </tbody>
           </table>
+          <div class="signature-block">
+            <div class="signature-line">Assinatura da equipe responsável: ${tarefa.equipeNome}</div>
+            <div class="signature-line">Data: ____/____/________</div>
+          </div>
         </div>
       `;
     }).join('');
@@ -959,6 +1048,7 @@ function deleteTask(taskId) {
       'inventario-materiais-pwa-v3',
       'inventario-materiais-pwa-v4',
       'inventario-materiais-pwa-v45',
+    'inventario-materiais-pwa-v46',
       STORAGE_KEY
     ];
 
@@ -977,7 +1067,8 @@ function deleteTask(taskId) {
     setPrintOptions({
       tarefaId: 'todas',
       incluirZerados: false,
-      somenteDivergentes: false
+      somenteDivergentes: false,
+      mostrarSaldoTeorico: true
     });
 
     window.location.reload();
@@ -990,7 +1081,7 @@ function deleteTask(taskId) {
           <span className="brand-badge">PWA</span>
           <div>
             <strong>Inventário Materiais</strong>
-            <small>V4.5 operacional</small>
+            <small>V4.6 operacional</small>
           </div>
         </div>
         <nav className="nav-list">
@@ -1229,6 +1320,7 @@ function deleteTask(taskId) {
                     <p><strong>Almoxarifado:</strong> {getAlmoxName(tarefa.almoxarifadoId)}</p>
                     <p><strong>Equipe:</strong> {tarefa.equipeNome}</p>
                     <p><strong>Integrantes:</strong> {tarefa.equipeIntegrantes.join(', ')}</p>
+                    <p><strong>Tipo:</strong> {tarefa.tipoContagem}</p>
                     <p><strong>Itens na lista:</strong> {tarefa.itemIds?.length || 0}</p>
                     <div className="actions-cell">
                       {tarefa.status === 'Pendente' ? <button className="primary-btn" onClick={() => updateTaskStatus(tarefa.id, 'Em execução')}>Iniciar</button> : null}
@@ -1246,6 +1338,7 @@ function deleteTask(taskId) {
         {activeTab === 'contagem' && (
           <div className="card">
             <SectionTitle title="Registrar contagem por tarefa" description="Seleciona a tarefa da equipe e só então abre a tabela com os itens daquela lista." />
+            <p className="muted-text">Estrutura preparada para futuro lançamento direto pela equipe, mantendo agora o chefe de inventário como operador principal.</p>
             {openTasksForCounting.length ? (
               <>
                 <div className="stack-list compact-list">
@@ -1264,7 +1357,7 @@ function deleteTask(taskId) {
                 {selectedTask ? (
                   <>
                     <p className="top-gap"><strong>Tarefa selecionada:</strong> {selectedTask.titulo}</p>
-                    <p><strong>Equipe:</strong> {selectedTask.equipeNome} | <strong>Integrantes:</strong> {selectedTask.equipeIntegrantes.join(', ')}</p>
+                    <p><strong>Equipe:</strong> {selectedTask.equipeNome} | <strong>Tipo:</strong> {selectedTask.tipoContagem} | <strong>Integrantes:</strong> {selectedTask.equipeIntegrantes.join(', ')}</p>
                     <div className="table-wrap top-gap">
                       <table>
                         <thead><tr><th>Código</th><th>Descrição</th><th>Saldo teórico</th><th>Quantidade contada</th><th>Usuário</th><th>Observação</th><th>Último status</th></tr></thead>
@@ -1293,27 +1386,53 @@ function deleteTask(taskId) {
 
         {activeTab === 'divergencias' && (
           <div className="card">
-            <SectionTitle title="Validação / Recontagem" description="Seleciona vários itens divergentes para preparar uma única lista de recontagem por lote." action={divergencias.length ? <button className="primary-btn" onClick={() => prepareBatchRecount()}>Preparar recontagem em lote</button> : null} />
-            <div className="table-wrap">
+            <SectionTitle title="Validação / Recontagem" description="Filtra por classificação, seleciona os itens e decide entre validar a contagem ou solicitar nova recontagem em lote." />
+            <div className="form-grid top-gap">
+              <label>Classificação
+                <select value={validationFilter} onChange={(e) => setValidationFilter(e.target.value)}>
+                  <option value="todas">Todas</option>
+                  <option value="criticas">Diferença crítica</option>
+                  <option value="admissiveis">Diferença admissível</option>
+                </select>
+              </label>
+              <div className="actions-cell wrap-actions">
+                <button className="secondary-btn" onClick={selectCriticalDivergencias}>Selecionar diferença crítica</button>
+                <button className="secondary-btn" onClick={selectAllDivergencias}>Selecionar todos</button>
+                <button className="secondary-btn" onClick={clearDivergenceSelection}>Limpar seleção</button>
+              </div>
+              <div className="actions-cell wrap-actions full-width">
+                <button className="primary-btn" onClick={() => applyValidationToItems([], 'validar')}>Validar contagem</button>
+                <button className="secondary-btn" onClick={() => applyValidationToItems([], 'recontagem')}>Solicitar recontagem</button>
+              </div>
+            </div>
+            <div className="table-wrap top-gap">
               <table>
-                <thead><tr><th></th><th>Código</th><th>Descrição</th><th>Almox</th><th>Diferença</th><th>Classificação</th><th>Última equipe</th><th>Ação rápida</th></tr></thead>
+                <thead><tr><th></th><th>Código</th><th>Descrição</th><th>Almox</th><th>Diferença</th><th>Classificação</th><th>Situação</th><th>Ações</th></tr></thead>
                 <tbody>
-                  {divergencias.map((item) => (
+                  {filteredDivergencias.map((item) => (
                     <tr key={item.id}>
                       <td><input type="checkbox" checked={selectedRecountItemIds.includes(item.id)} onChange={() => toggleRecountSelection(item.id)} /></td>
                       <td>{item.codigoItem}</td>
                       <td>{item.descricaoItem}</td>
-                      <td>{getAlmoxName(item.almoxarifadoId)}</td>
+                      <td>{ALMOXARIFADOS.find((almox) => almox.id === item.almoxarifadoId)?.codigoCompleto || ''} — {getAlmoxName(item.almoxarifadoId)}</td>
                       <td>{formatNumber(item.diferencaAtual)}</td>
                       <td><span className={statusClassName(item.classificacaoAtual)}>{item.classificacaoAtual}</span></td>
-                      <td>{item.ultimaTarefa?.equipeNome || '-'}</td>
-                      <td><button className="secondary-btn" onClick={() => prepareBatchRecount([item.id])}>Só este item</button></td>
+                      <td>{item.situacaoValidacao}</td>
+                      <td>
+                        <div className="actions-cell wrap-actions">
+                          <button className="secondary-btn" onClick={() => applyValidationToItems([item.id], 'validar')}>Validar</button>
+                          <button className="secondary-btn" onClick={() => applyValidationToItems([item.id], 'recontagem')}>Recontar</button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
+                  {!filteredDivergencias.length ? (
+                    <tr><td colSpan="8" className="muted-text">Nenhum item pendente de validação para o filtro escolhido.</td></tr>
+                  ) : null}
                 </tbody>
               </table>
             </div>
-            <p className="muted-text top-gap">Itens marcados para recontagem: {selectedRecountItemIds.length}</p>
+            <p className="muted-text top-gap">Itens selecionados: {selectedRecountItemIds.length}. O sistema prepara os lotes de recontagem conforme os itens marcados e registra o tipo de contagem como Recontagem.</p>
           </div>
         )}
 
@@ -1325,24 +1444,25 @@ function deleteTask(taskId) {
                 <label>Tarefa<select value={printOptions.tarefaId} onChange={(e) => setPrintOptions((prev) => ({ ...prev, tarefaId: e.target.value }))}><option value="todas">Todas as tarefas</option>{state.tarefas.map((tarefa) => <option key={tarefa.id} value={tarefa.id}>{tarefa.titulo}</option>)}</select></label>
                 <label className="checkbox-row"><input type="checkbox" checked={printOptions.incluirZerados} onChange={(e) => setPrintOptions((prev) => ({ ...prev, incluirZerados: e.target.checked }))} />Incluir zerados</label>
                 <label className="checkbox-row"><input type="checkbox" checked={printOptions.somenteDivergentes} onChange={(e) => setPrintOptions((prev) => ({ ...prev, somenteDivergentes: e.target.checked }))} />Somente divergentes</label>
+                <label className="checkbox-row"><input type="checkbox" checked={printOptions.mostrarSaldoTeorico} onChange={(e) => setPrintOptions((prev) => ({ ...prev, mostrarSaldoTeorico: e.target.checked }))} />Mostrar saldo do sistema</label>
                 <button className="primary-btn full-width" onClick={generateListaFisica}>Gerar lista física</button>
                 <button className="secondary-btn full-width" onClick={generateRelatorioFinal}>Emitir relatório final (PDF)</button>
                 <button className="secondary-btn full-width" onClick={exportRelatorioFinalXlsx}>Exportar relatório final (.xlsx)</button>
               </div>
             </div>
             <div className="card">
-              <SectionTitle title="Resumo da V4.5" description="Correções e entregas desta versão." />
+              <SectionTitle title="Resumo da V4.6" description="Correções e entregas desta versão." />
               <ul className="simple-list">
                 <li>• exclusão/cancelamento de tarefas</li>
                 <li>• contagem em tabela aberta com salvamento em lote</li>
                 <li>• parâmetros de desvio admissível</li>
                 <li>• formatação de código 0000.0000.000000</li>
-                <li>• recontagem por outra equipe ou por equipe mista</li>
+                <li>• recontagem em lote por outra equipe ou por equipe mista</li>
                 <li>• lista completa de integrantes</li>
                 <li>• divisão do mesmo almox sem repetir itens em tarefas abertas</li>
-                <li>• PDF com equipe responsável, rodapé otimizado, linhas alternadas e saldo centralizado
+                <li>• PDF com equipe responsável, assinatura, opção com/sem saldo e linhas alternadas
                 </li>
-                <li>• relatório final separado por almoxarifado, em PDF e .xlsx
+                <li>• relatório final separado por almoxarifado com código, em PDF e .xlsx
                 </li>
                 <li>• planejamento por almoxarifado com divisão automática por equipes
                 </li>
