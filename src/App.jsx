@@ -199,13 +199,13 @@ function openPrintWindow(title, htmlContent) {
       <head>
         <title>${title}</title>
         <style>
-          body { font-family: Arial, sans-serif; padding: 18px 22px 52px; color: #111827; }
+          body { font-family: Arial, sans-serif; padding: 18px 22px 52px; color: #111827; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           h1,h2,h3 { margin: 0 0 10px; }
           .sheet { margin-bottom: 24px; page-break-inside: avoid; }
           table { width: 100%; border-collapse: collapse; }
           th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; font-size: 11px; }
           th { background: #eff6ff; }
-          tbody tr:nth-child(even) { background: #f1f5f9; }
+          tbody tr:nth-child(even) { background: #f1f5f9 !important; }
           .num { text-align: center; }
           .space { height: 24px; }
           .footer-meta { position: fixed; left: 22px; right: 22px; bottom: 8px; font-size: 11px; color: #475569; display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid #cbd5e1; padding-top: 6px; }
@@ -229,6 +229,7 @@ export default function App() {
   const [itemFilter, setItemFilter] = useState('todos');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedItemIds, setSelectedItemIds] = useState([]);
+  const [selectedRecountItemIds, setSelectedRecountItemIds] = useState([]);
   const [countDrafts, setCountDrafts] = useState({});
   const [currentTaskId, setCurrentTaskId] = useState('');
   const [teamForm, setTeamForm] = useState({ id: '', nome: '', observacoes: '', integrantesTexto: '' });
@@ -627,6 +628,7 @@ function handleCreateTask(event) {
   }));
 
   setCurrentTaskId(tarefa.id);
+  setSelectedRecountItemIds([]);
   setActiveTab('tarefas');
 }
 
@@ -758,20 +760,51 @@ function deleteTask(taskId) {
     if (selectedTask.status === 'Pendente') updateTaskStatus(selectedTask.id, 'Em execução');
   }
 
-  function createRecountForItem(item) {
-    const lastTeamId = item.ultimaTarefa?.equipeId;
-    const fallbackTeam = state.equipes.find((equipe) => equipe.ativa && equipe.id !== lastTeamId);
+  function toggleRecountSelection(itemId) {
+    setSelectedRecountItemIds((prev) => (
+      prev.includes(itemId) ? prev.filter((id) => id !== itemId) : [...prev, itemId]
+    ));
+  }
+
+  function prepareBatchRecount(itemIds = []) {
+    const ids = itemIds.length ? itemIds : selectedRecountItemIds;
+    const items = divergencias.filter((item) => ids.includes(item.id));
+    if (!items.length) {
+      alert('Seleciona ao menos um item divergente para preparar a recontagem.');
+      return;
+    }
+
+    const sameAlmox = new Set(items.map((item) => item.almoxarifadoId));
+    if (sameAlmox.size > 1) {
+      alert('A preparação da recontagem em lote deve ser feita com itens de um mesmo almoxarifado.');
+      return;
+    }
+
+    const targetAlmox = items[0].almoxarifadoId;
+    const historicoTaskIds = new Set(items.flatMap((item) => (registrosPorItem.get(item.id) || []).map((registro) => registro.tarefaId)));
+    const usedTeamIds = new Set(
+      [...historicoTaskIds]
+        .map((taskId) => tasksById[taskId]?.equipeId)
+        .filter(Boolean)
+    );
+
+    const fallbackTeam = state.equipes.find((equipe) => equipe.ativa && !usedTeamIds.has(equipe.id));
+    const orderedItems = [...items].sort((a, b) => a.codigoItem.localeCompare(b.codigoItem));
+    const tipos = orderedItems.map((item) => item.ultimaTarefa?.tipoContagem).filter(Boolean);
+    const nextType = tipos.includes('2ª contagem') || tipos.includes('3ª contagem') ? '3ª contagem' : '2ª contagem';
+
     setTaskForm({
-      titulo: `Recontagem - ${item.codigoItem}`,
-      almoxarifadoId: item.almoxarifadoId,
+      titulo: `Recontagem - ${getAlmoxName(targetAlmox)}`,
+      almoxarifadoId: targetAlmox,
       equipeId: fallbackTeam?.id || '',
-      tipoContagem: item.ultimaTarefa?.tipoContagem === '1ª contagem' ? '2ª contagem' : '3ª contagem',
-      observacao: `Recontagem do item ${item.codigoItem}`,
+      tipoContagem: nextType,
+      observacao: `Recontagem em lote com ${orderedItems.length} item(ns) divergente(s).`,
       scope: 'selecaoManual',
       equipeModo: fallbackTeam ? 'fixa' : 'mista',
       integrantesMistos: []
     });
-    setSelectedItemIds([item.id]);
+    setSelectedItemIds(orderedItems.map((item) => item.id));
+    setSelectedRecountItemIds(orderedItems.map((item) => item.id));
     setActiveTab('tarefas');
   }
 
@@ -786,42 +819,83 @@ function deleteTask(taskId) {
     };
   }
 
-  function generateRelatorioFinal() {
-    const rows = itensComStatus.map((item) => {
-      const historico = getHistoricoContagens(item.id);
-      const ultimaEquipe = item.ultimaTarefa?.equipeNome || '-';
-      return `
-        <tr>
-          <td>${item.codigoItem}</td>
-          <td>${item.descricaoItem}</td>
-          <td>${getAlmoxName(item.almoxarifadoId)}</td>
-          <td class="num">${formatNumber(item.saldoTeorico)}</td>
-          <td class="num">${historico.primeira === '' ? '' : formatNumber(historico.primeira)}</td>
-          <td class="num">${historico.segunda === '' ? '' : formatNumber(historico.segunda)}</td>
-          <td class="num">${historico.terceira === '' ? '' : formatNumber(historico.terceira)}</td>
-          <td>${historico.ultimaClassificacao}</td>
-          <td>${ultimaEquipe}</td>
-        </tr>`;
-    }).join('');
+  function buildRelatorioFinalRows() {
+    return ALMOXARIFADOS.map((almox) => ({
+      almox,
+      items: itensComStatus
+        .filter((item) => item.almoxarifadoId === almox.id)
+        .sort((a, b) => a.codigoItem.localeCompare(b.codigoItem))
+        .map((item) => {
+          const historico = getHistoricoContagens(item.id);
+          return {
+            codigo: item.codigoItem,
+            descricao: item.descricaoItem,
+            saldoTeorico: Number(item.saldoTeorico || 0),
+            primeira: historico.primeira === '' ? '' : Number(historico.primeira),
+            segunda: historico.segunda === '' ? '' : Number(historico.segunda),
+            terceira: historico.terceira === '' ? '' : Number(historico.terceira),
+            classificacaoFinal: historico.ultimaClassificacao
+          };
+        })
+    })).filter((group) => group.items.length);
+  }
 
-    openPrintWindow('Relatório final de contagens', `
+  function generateRelatorioFinal() {
+    const groups = buildRelatorioFinalRows();
+    const html = groups.map(({ almox, items }) => `
       <div class="sheet">
-        <h2>Relatório final de todas as contagens</h2>
+        <h2>${almox.nome}</h2>
         <table>
           <thead>
             <tr>
-              <th>Código</th><th>Descrição</th><th>Almox</th><th>Saldo teórico</th><th>1ª</th><th>2ª</th><th>3ª</th><th>Classificação final</th><th>Última equipe</th>
+              <th>Código</th><th>Descrição</th><th>Saldo teórico</th><th>1ª</th><th>2ª</th><th>3ª</th><th>Classificação final</th>
             </tr>
           </thead>
-          <tbody>${rows}</tbody>
+          <tbody>
+            ${items.map((item, index) => `
+              <tr style="background:${index % 2 === 0 ? '#ffffff' : '#f1f5f9'};">
+                <td>${item.codigo}</td>
+                <td>${item.descricao}</td>
+                <td class="num">${formatNumber(item.saldoTeorico)}</td>
+                <td class="num">${item.primeira === '' ? '' : formatNumber(item.primeira)}</td>
+                <td class="num">${item.segunda === '' ? '' : formatNumber(item.segunda)}</td>
+                <td class="num">${item.terceira === '' ? '' : formatNumber(item.terceira)}</td>
+                <td>${item.classificacaoFinal}</td>
+              </tr>`).join('')}
+          </tbody>
         </table>
       </div>
+    `).join('');
+
+    openPrintWindow('Relatório final de contagens', `
+      ${html}
       <div class="footer-meta">
         <span>Relatório final de todas as contagens</span>
         <span>Campanha: ${campanhaAtual.nome}</span>
         <span>Emitido em: ${new Date().toLocaleString('pt-BR')}</span>
       </div>
     `);
+  }
+
+  function exportRelatorioFinalXlsx() {
+    const groups = buildRelatorioFinalRows();
+    const rows = groups.flatMap(({ almox, items }) => (
+      items.map((item) => ({
+        Almoxarifado: almox.nome,
+        Código: item.codigo,
+        Descrição: item.descricao,
+        'Saldo teórico': item.saldoTeorico,
+        '1ª contagem': item.primeira,
+        '2ª contagem': item.segunda,
+        '3ª contagem': item.terceira,
+        'Classificação final': item.classificacaoFinal
+      }))
+    ));
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Relatório final');
+    XLSX.writeFile(workbook, 'relatorio-final-inventario.xlsx');
   }
 
   function generateListaFisica() {
@@ -843,8 +917,8 @@ function deleteTask(taskId) {
               </tr>
             </thead>
             <tbody>
-              ${itens.map((item) => `
-                <tr>
+              ${itens.map((item, index) => `
+                <tr style="background:${index % 2 === 0 ? '#ffffff' : '#f1f5f9'}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">
                   <td>${item.codigoItem}</td>
                   <td>${item.descricaoItem}</td>
                   <td class="num">${formatNumber(item.saldoTeorico)}</td>
@@ -899,6 +973,7 @@ function deleteTask(taskId) {
     setCountDrafts({});
     setCurrentTaskId('');
     setSelectedItemIds([]);
+    setSelectedRecountItemIds([]);
     setPrintOptions({
       tarefaId: 'todas',
       incluirZerados: false,
@@ -1170,55 +1245,75 @@ function deleteTask(taskId) {
 
         {activeTab === 'contagem' && (
           <div className="card">
-            <SectionTitle title="Contagem em lista aberta" description="Permite lançar várias entradas de uma vez na mesma tabela. Tarefas concluídas saem desta lista." action={openTasksForCounting.length ? <label>Tarefa<select value={selectedTask?.id || ''} onChange={(e) => setCurrentTaskId(e.target.value)}>{openTasksForCounting.map((tarefa) => <option key={tarefa.id} value={tarefa.id}>{tarefa.titulo}</option>)}</select></label> : null} />
-            {selectedTask ? (
+            <SectionTitle title="Registrar contagem por tarefa" description="Seleciona a tarefa da equipe e só então abre a tabela com os itens daquela lista." />
+            {openTasksForCounting.length ? (
               <>
-                <p><strong>Equipe:</strong> {selectedTask.equipeNome} | <strong>Integrantes:</strong> {selectedTask.equipeIntegrantes.join(', ')}</p>
-                <div className="table-wrap">
-                  <table>
-                    <thead><tr><th>Código</th><th>Descrição</th><th>Saldo teórico</th><th>Quantidade contada</th><th>Usuário</th><th>Observação</th><th>Último status</th></tr></thead>
-                    <tbody>
-                      {taskItems.map((item) => (
-                        <tr key={item.id}>
-                          <td>{item.codigoItem}</td>
-                          <td>{item.descricaoItem}</td>
-                          <td>{formatNumber(item.saldoTeorico)}</td>
-                          <td><input type="number" value={countDrafts[item.id]?.quantidadeContada ?? ''} onChange={(e) => updateCountDraft(item.id, 'quantidadeContada', e.target.value)} /></td>
-                          <td><input value={countDrafts[item.id]?.usuarioRegistro ?? ''} onChange={(e) => updateCountDraft(item.id, 'usuarioRegistro', e.target.value)} placeholder="Operador" /></td>
-                          <td><input value={countDrafts[item.id]?.observacao ?? ''} onChange={(e) => updateCountDraft(item.id, 'observacao', e.target.value)} /></td>
-                          <td>{item.classificacaoAtual === 'Sem registro' ? 'Sem registro' : <span className={statusClassName(item.classificacaoAtual)}>{item.classificacaoAtual}</span>}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="stack-list compact-list">
+                  {openTasksForCounting.map((tarefa) => (
+                    <button
+                      key={tarefa.id}
+                      className={selectedTask?.id === tarefa.id ? 'task-pick active' : 'task-pick'}
+                      onClick={() => setCurrentTaskId(tarefa.id)}
+                    >
+                      <strong>{tarefa.titulo}</strong>
+                      <span>{getAlmoxName(tarefa.almoxarifadoId)} • {tarefa.equipeNome}</span>
+                      <span>{tarefa.itemIds?.length || 0} item(ns) • {tarefa.status}</span>
+                    </button>
+                  ))}
                 </div>
-                <div className="actions-cell top-gap"><button className="primary-btn" onClick={saveTableCounts}>Salvar lançamentos em lote</button></div>
+                {selectedTask ? (
+                  <>
+                    <p className="top-gap"><strong>Tarefa selecionada:</strong> {selectedTask.titulo}</p>
+                    <p><strong>Equipe:</strong> {selectedTask.equipeNome} | <strong>Integrantes:</strong> {selectedTask.equipeIntegrantes.join(', ')}</p>
+                    <div className="table-wrap top-gap">
+                      <table>
+                        <thead><tr><th>Código</th><th>Descrição</th><th>Saldo teórico</th><th>Quantidade contada</th><th>Usuário</th><th>Observação</th><th>Último status</th></tr></thead>
+                        <tbody>
+                          {taskItems.map((item) => (
+                            <tr key={item.id}>
+                              <td>{item.codigoItem}</td>
+                              <td>{item.descricaoItem}</td>
+                              <td className="num">{formatNumber(item.saldoTeorico)}</td>
+                              <td><input type="number" value={countDrafts[item.id]?.quantidadeContada ?? ''} onChange={(e) => updateCountDraft(item.id, 'quantidadeContada', e.target.value)} /></td>
+                              <td><input value={countDrafts[item.id]?.usuarioRegistro ?? ''} onChange={(e) => updateCountDraft(item.id, 'usuarioRegistro', e.target.value)} placeholder="Operador" /></td>
+                              <td><input value={countDrafts[item.id]?.observacao ?? ''} onChange={(e) => updateCountDraft(item.id, 'observacao', e.target.value)} /></td>
+                              <td>{item.classificacaoAtual === 'Sem registro' ? 'Sem registro' : <span className={statusClassName(item.classificacaoAtual)}>{item.classificacaoAtual}</span>}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="actions-cell top-gap"><button className="primary-btn" onClick={saveTableCounts}>Salvar lançamentos em lote</button></div>
+                  </>
+                ) : null}
               </>
-            ) : <div className="empty-state">Nenhuma tarefa disponível.</div>}
+            ) : <div className="empty-state">Nenhuma tarefa disponível para lançamento.</div>}
           </div>
         )}
 
         {activeTab === 'divergencias' && (
           <div className="card">
-            <SectionTitle title="Divergências" description="Recontagem sempre por outras equipes ou por equipe mista." />
+            <SectionTitle title="Validação / Recontagem" description="Seleciona vários itens divergentes para preparar uma única lista de recontagem por lote." action={divergencias.length ? <button className="primary-btn" onClick={() => prepareBatchRecount()}>Preparar recontagem em lote</button> : null} />
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Código</th><th>Descrição</th><th>Almox</th><th>Diferença</th><th>Classificação</th><th>Última equipe</th><th>Ação</th></tr></thead>
+                <thead><tr><th></th><th>Código</th><th>Descrição</th><th>Almox</th><th>Diferença</th><th>Classificação</th><th>Última equipe</th><th>Ação rápida</th></tr></thead>
                 <tbody>
                   {divergencias.map((item) => (
                     <tr key={item.id}>
+                      <td><input type="checkbox" checked={selectedRecountItemIds.includes(item.id)} onChange={() => toggleRecountSelection(item.id)} /></td>
                       <td>{item.codigoItem}</td>
                       <td>{item.descricaoItem}</td>
                       <td>{getAlmoxName(item.almoxarifadoId)}</td>
                       <td>{formatNumber(item.diferencaAtual)}</td>
                       <td><span className={statusClassName(item.classificacaoAtual)}>{item.classificacaoAtual}</span></td>
                       <td>{item.ultimaTarefa?.equipeNome || '-'}</td>
-                      <td><button className="primary-btn" onClick={() => createRecountForItem(item)}>Preparar recontagem</button></td>
+                      <td><button className="secondary-btn" onClick={() => prepareBatchRecount([item.id])}>Só este item</button></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            <p className="muted-text top-gap">Itens marcados para recontagem: {selectedRecountItemIds.length}</p>
           </div>
         )}
 
@@ -1231,7 +1326,8 @@ function deleteTask(taskId) {
                 <label className="checkbox-row"><input type="checkbox" checked={printOptions.incluirZerados} onChange={(e) => setPrintOptions((prev) => ({ ...prev, incluirZerados: e.target.checked }))} />Incluir zerados</label>
                 <label className="checkbox-row"><input type="checkbox" checked={printOptions.somenteDivergentes} onChange={(e) => setPrintOptions((prev) => ({ ...prev, somenteDivergentes: e.target.checked }))} />Somente divergentes</label>
                 <button className="primary-btn full-width" onClick={generateListaFisica}>Gerar lista física</button>
-                <button className="secondary-btn full-width" onClick={generateRelatorioFinal}>Emitir relatório final</button>
+                <button className="secondary-btn full-width" onClick={generateRelatorioFinal}>Emitir relatório final (PDF)</button>
+                <button className="secondary-btn full-width" onClick={exportRelatorioFinalXlsx}>Exportar relatório final (.xlsx)</button>
               </div>
             </div>
             <div className="card">
@@ -1246,7 +1342,7 @@ function deleteTask(taskId) {
                 <li>• divisão do mesmo almox sem repetir itens em tarefas abertas</li>
                 <li>• PDF com equipe responsável, rodapé otimizado, linhas alternadas e saldo centralizado
                 </li>
-                <li>• relatório final de todas as contagens
+                <li>• relatório final separado por almoxarifado, em PDF e .xlsx
                 </li>
                 <li>• planejamento por almoxarifado com divisão automática por equipes
                 </li>
