@@ -96,6 +96,26 @@ function parseMembersText(text) {
     });
 }
 
+function buildMembersFromShortFields(teamForm) {
+  return [teamForm.integrante1, teamForm.integrante2, teamForm.integrante3, teamForm.integrante4]
+    .map((nome) => String(nome || '').trim())
+    .filter(Boolean)
+    .map((nome) => ({ id: uid('int'), nome, matriculaLogin: '', funcao: 'Contador' }));
+}
+
+function mapTeamToForm(equipe) {
+  const nomes = (equipe.integrantes || []).map((item) => item.nome || '');
+  return {
+    id: equipe.id,
+    nome: equipe.nome,
+    observacoes: equipe.observacoes || '',
+    integrante1: nomes[0] || '',
+    integrante2: nomes[1] || '',
+    integrante3: nomes[2] || '',
+    integrante4: nomes[3] || ''
+  };
+}
+
 function getAlmoxName(almoxId) {
   return ALMOXARIFADOS.find((item) => item.id === almoxId)?.nome || '-';
 }
@@ -119,7 +139,12 @@ function classifyDifference(diferenca, saldoTeorico, config) {
 }
 
 function statusClassName(value) {
-  return `status-badge ${String(value || 'sem-registro').replace(/\s+/g, '-').toLowerCase()}`;
+  const normalized = String(value || 'sem-registro')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, '-')
+    .toLowerCase();
+  return `status-badge ${normalized}`;
 }
 
 function Card({ title, value, subtitle }) {
@@ -240,7 +265,7 @@ export default function App() {
   const [selectedRecountItemIds, setSelectedRecountItemIds] = useState([]);
   const [countDrafts, setCountDrafts] = useState({});
   const [currentTaskId, setCurrentTaskId] = useState('');
-  const [teamForm, setTeamForm] = useState({ id: '', nome: '', observacoes: '', integrantesTexto: '' });
+  const [teamForm, setTeamForm] = useState({ id: '', nome: '', observacoes: '', integrante1: '', integrante2: '', integrante3: '', integrante4: '' });
   const [taskForm, setTaskForm] = useState({
     titulo: '',
     almoxarifadoId: 'almox-001',
@@ -275,7 +300,7 @@ export default function App() {
   const tasksById = useMemo(() => Object.fromEntries(state.tarefas.map((tarefa) => [tarefa.id, tarefa])), [state.tarefas]);
 
   const openTasksForCounting = useMemo(
-    () => state.tarefas.filter((tarefa) => !['Concluída', 'Cancelada'].includes(tarefa.status)),
+    () => state.tarefas.filter((tarefa) => !['Concluída', 'Cancelada', 'Validada', 'Validada com ressalvas'].includes(tarefa.status)),
     [state.tarefas]
   );
 
@@ -366,12 +391,16 @@ export default function App() {
   }
 
   function resetTeamForm() {
-    setTeamForm({ id: '', nome: '', observacoes: '', integrantesTexto: '' });
+    setTeamForm({ id: '', nome: '', observacoes: '', integrante1: '', integrante2: '', integrante3: '', integrante4: '' });
   }
 
   function handleCreateOrUpdateTeam(event) {
     event.preventDefault();
-    const integrantes = parseMembersText(teamForm.integrantesTexto);
+    const integrantes = buildMembersFromShortFields(teamForm);
+    if (!integrantes.length) {
+      alert('Informa ao menos um integrante da equipe.');
+      return;
+    }
     const payload = {
       id: teamForm.id || uid('eq'),
       nome: teamForm.nome,
@@ -387,12 +416,7 @@ export default function App() {
   }
 
   function editTeam(equipe) {
-    setTeamForm({
-      id: equipe.id,
-      nome: equipe.nome,
-      observacoes: equipe.observacoes,
-      integrantesTexto: buildMembersText(equipe.integrantes)
-    });
+    setTeamForm(mapTeamToForm(equipe));
     setActiveTab('equipes');
   }
 
@@ -415,7 +439,7 @@ export default function App() {
   function activeItemIdsInOpenTasks(almoxarifadoId) {
     return new Set(
       state.tarefas
-        .filter((tarefa) => tarefa.almoxarifadoId === almoxarifadoId && !['Concluída', 'Cancelada'].includes(tarefa.status))
+        .filter((tarefa) => tarefa.almoxarifadoId === almoxarifadoId && !['Concluída', 'Cancelada', 'Validada', 'Validada com ressalvas'].includes(tarefa.status))
         .flatMap((tarefa) => tarefa.itemIds || [])
     );
   }
@@ -423,7 +447,7 @@ export default function App() {
   function openTaskTeamIds() {
     return new Set(
       state.tarefas
-        .filter((tarefa) => !['Concluída', 'Cancelada'].includes(tarefa.status) && tarefa.equipeId)
+        .filter((tarefa) => !['Concluída', 'Cancelada', 'Validada', 'Validada com ressalvas'].includes(tarefa.status) && tarefa.equipeId)
         .map((tarefa) => tarefa.equipeId)
     );
   }
@@ -445,18 +469,24 @@ export default function App() {
   const availableItemsForTask = useMemo(() => {
     const base = itensComStatus.filter((item) => item.almoxarifadoId === taskForm.almoxarifadoId);
     const blocked = activeItemIdsInOpenTasks(taskForm.almoxarifadoId);
+
+    if (taskForm.tipoContagem === 'Recontagem') {
+      const idsSelecionados = selectedRecountItemIds.length ? selectedRecountItemIds : selectedItemIds;
+      return base.filter((item) => idsSelecionados.includes(item.id));
+    }
+
     let available = base.filter((item) => !blocked.has(item.id));
-    if (taskForm.tipoContagem === '1ª contagem') {
-      if (taskForm.scope === 'somentePendentes') available = available.filter((item) => item.statusContagem === 'Pendente');
-      if (taskForm.scope === 'selecaoManual') available = available.filter((item) => selectedItemIds.includes(item.id));
-    } else {
-      available = divergencias.filter((item) => item.almoxarifadoId === taskForm.almoxarifadoId);
-      if (taskForm.scope === 'selecaoManual') available = available.filter((item) => selectedItemIds.includes(item.id));
+    if (taskForm.scope === 'somentePendentes') {
+      available = available.filter((item) => item.statusContagem === 'Pendente');
+    }
+    if (taskForm.scope === 'selecaoManual') {
+      available = available.filter((item) => selectedItemIds.includes(item.id));
     }
     return available;
-  }, [itensComStatus, divergencias, taskForm, selectedItemIds, state.tarefas]);
+  }, [itensComStatus, taskForm, selectedItemIds, selectedRecountItemIds, state.tarefas]);
 
   useEffect(() => {
+    if (taskForm.tipoContagem === 'Recontagem') return;
     setSelectedItemIds([]);
   }, [taskForm.almoxarifadoId, taskForm.scope, taskForm.tipoContagem]);
 
@@ -816,9 +846,8 @@ function deleteTask(taskId) {
     }
 
     if (action === 'validar') {
-      updateState((prev) => ({
-        ...prev,
-        analises: items.reduce((acc, item) => {
+      updateState((prev) => {
+        const analises = items.reduce((acc, item) => {
           const existing = acc.find((analise) => analise.itemId === item.id);
           if (existing) {
             existing.analiseFinal = 'Contagem validada pelo chefe de inventário.';
@@ -835,8 +864,27 @@ function deleteTask(taskId) {
             observacaoGerencial: 'Item validado sem necessidade de nova lista.'
           });
           return acc;
-        }, [...prev.analises])
-      }));
+        }, [...prev.analises]);
+
+        const tarefas = prev.tarefas.map((tarefa) => {
+          const itemIds = tarefa.itemIds || [];
+          const hasAny = itemIds.some((itemId) => analises.find((analise) => analise.itemId === itemId));
+          if (!hasAny) return tarefa;
+
+          const hasRecount = itemIds.some((itemId) => analises.find((analise) => analise.itemId === itemId)?.situacaoDocumental === 'Em recontagem');
+          const hasValidated = itemIds.some((itemId) => analises.find((analise) => analise.itemId === itemId)?.situacaoDocumental === 'Validado');
+
+          if (hasValidated && hasRecount) {
+            return { ...tarefa, status: 'Validada com ressalvas' };
+          }
+          if (hasValidated && !hasRecount) {
+            return { ...tarefa, status: 'Validada' };
+          }
+          return tarefa;
+        });
+
+        return { ...prev, analises, tarefas };
+      });
       setSelectedRecountItemIds([]);
       return;
     }
@@ -870,9 +918,8 @@ function deleteTask(taskId) {
     });
     setSelectedItemIds(orderedItems.map((item) => item.id));
     setSelectedRecountItemIds(orderedItems.map((item) => item.id));
-    updateState((prev) => ({
-      ...prev,
-      analises: orderedItems.reduce((acc, item) => {
+    updateState((prev) => {
+      const analises = orderedItems.reduce((acc, item) => {
         const existing = acc.find((analise) => analise.itemId === item.id);
         if (existing) {
           existing.analiseFinal = '';
@@ -889,8 +936,19 @@ function deleteTask(taskId) {
           observacaoGerencial: 'Lote enviado para recontagem.'
         });
         return acc;
-      }, [...prev.analises])
-    }));
+      }, [...prev.analises]);
+
+      const tarefas = prev.tarefas.map((tarefa) => {
+        const itemIds = tarefa.itemIds || [];
+        const hasRecount = itemIds.some((itemId) => analises.find((analise) => analise.itemId === itemId)?.situacaoDocumental === 'Em recontagem');
+        const hasValidated = itemIds.some((itemId) => analises.find((analise) => analise.itemId === itemId)?.situacaoDocumental === 'Validado');
+        if (hasValidated && hasRecount) return { ...tarefa, status: 'Validada com ressalvas' };
+        if (!hasValidated && hasRecount && orderedItems.some((item) => itemIds.includes(item.id))) return { ...tarefa, status: 'Validada com ressalvas' };
+        return tarefa;
+      });
+
+      return { ...prev, analises, tarefas };
+    });
     setActiveTab('tarefas');
   }
 
@@ -912,13 +970,17 @@ function deleteTask(taskId) {
         .sort((a, b) => a.codigoItem.localeCompare(b.codigoItem))
         .map((item) => {
           const historico = getHistoricoContagens(item.id);
+          const ultimaContagem = historico.terceira !== '' ? Number(historico.terceira) : historico.segunda !== '' ? Number(historico.segunda) : historico.primeira !== '' ? Number(historico.primeira) : '';
+          const saldoTeorico = Number(item.saldoTeorico || 0);
+          const diferencaTotal = ultimaContagem === '' ? '' : Number(ultimaContagem) - saldoTeorico;
           return {
             codigo: item.codigoItem,
             descricao: item.descricaoItem,
-            saldoTeorico: Number(item.saldoTeorico || 0),
+            saldoTeorico,
             primeira: historico.primeira === '' ? '' : Number(historico.primeira),
             segunda: historico.segunda === '' ? '' : Number(historico.segunda),
             terceira: historico.terceira === '' ? '' : Number(historico.terceira),
+            diferencaTotal,
             classificacaoFinal: historico.ultimaClassificacao
           };
         })
@@ -945,6 +1007,7 @@ function deleteTask(taskId) {
                 <td class="num">${item.primeira === '' ? '' : formatNumber(item.primeira)}</td>
                 <td class="num">${item.segunda === '' ? '' : formatNumber(item.segunda)}</td>
                 <td class="num">${item.terceira === '' ? '' : formatNumber(item.terceira)}</td>
+                <td class="num">${item.diferencaTotal === '' ? '' : formatNumber(item.diferencaTotal)}</td>
                 <td>${item.classificacaoFinal}</td>
               </tr>`).join('')}
           </tbody>
@@ -973,6 +1036,7 @@ function deleteTask(taskId) {
         '1ª contagem': item.primeira,
         '2ª contagem': item.segunda,
         '3ª contagem': item.terceira,
+        'Diferença total': item.diferencaTotal,
         'Classificação final': item.classificacaoFinal
       }))
     ));
@@ -1187,11 +1251,14 @@ function deleteTask(taskId) {
         {activeTab === 'equipes' && (
           <section className="two-column-grid">
             <div className="card">
-              <SectionTitle title={teamForm.id ? 'Editar equipe' : 'Cadastrar equipe'} description="Integrantes: um por linha, no formato Nome | Matrícula | Função." action={teamForm.id ? <button className="secondary-btn" onClick={resetTeamForm}>Cancelar</button> : null} />
+              <SectionTitle title={teamForm.id ? 'Editar equipe' : 'Cadastrar equipe'} description="Informa os nomes dos integrantes em campos curtos." action={teamForm.id ? <button className="secondary-btn" onClick={resetTeamForm}>Cancelar</button> : null} />
               <form className="form-grid" onSubmit={handleCreateOrUpdateTeam}>
                 <label>Nome da equipe<input value={teamForm.nome} onChange={(e) => setTeamForm((prev) => ({ ...prev, nome: e.target.value }))} required /></label>
                 <label className="full-width">Observações<input value={teamForm.observacoes} onChange={(e) => setTeamForm((prev) => ({ ...prev, observacoes: e.target.value }))} /></label>
-                <label className="full-width">Integrantes<textarea rows="7" value={teamForm.integrantesTexto} onChange={(e) => setTeamForm((prev) => ({ ...prev, integrantesTexto: e.target.value }))} /></label>
+                <label>Integrante 1<input value={teamForm.integrante1} onChange={(e) => setTeamForm((prev) => ({ ...prev, integrante1: e.target.value }))} /></label>
+                <label>Integrante 2<input value={teamForm.integrante2} onChange={(e) => setTeamForm((prev) => ({ ...prev, integrante2: e.target.value }))} /></label>
+                <label>Integrante 3<input value={teamForm.integrante3} onChange={(e) => setTeamForm((prev) => ({ ...prev, integrante3: e.target.value }))} /></label>
+                <label>Integrante 4<input value={teamForm.integrante4} onChange={(e) => setTeamForm((prev) => ({ ...prev, integrante4: e.target.value }))} /></label>
                 <button className="primary-btn full-width" type="submit">Salvar equipe</button>
               </form>
             </div>
@@ -1231,7 +1298,7 @@ function deleteTask(taskId) {
                 <table>
                   <thead><tr><th>Código</th><th>Descrição</th><th>Almox</th><th>Saldo</th><th>Status</th><th>Classificação</th></tr></thead>
                   <tbody>
-                    {filteredItems.map((item) => <tr key={item.id}><td>{item.codigoItem}</td><td>{item.descricaoItem}</td><td>{getAlmoxName(item.almoxarifadoId)}</td><td>{formatNumber(item.saldoTeorico)}</td><td>{item.statusContagem}</td><td><span className={statusClassName(item.classificacaoAtual)}>{item.classificacaoAtual}</span></td></tr>)}
+                    {filteredItems.map((item) => <tr key={item.id}><td>{item.codigoItem}</td><td>{item.descricaoItem}</td><td>{getAlmoxName(item.almoxarifadoId)}</td><td>{formatNumber(item.saldoTeorico)}</td><td>{item.statusContagem}</td><td><span className={statusClassName(item.classificacaoAtual)} style={item.classificacaoAtual === 'Sem diferença' ? { background: '#dcfce7', color: '#166534' } : undefined}>{item.classificacaoAtual}</span></td></tr>)}
                   </tbody>
                 </table>
               </div>
@@ -1416,7 +1483,7 @@ function deleteTask(taskId) {
                       <td>{item.descricaoItem}</td>
                       <td>{ALMOXARIFADOS.find((almox) => almox.id === item.almoxarifadoId)?.codigoCompleto || ''} — {getAlmoxName(item.almoxarifadoId)}</td>
                       <td>{formatNumber(item.diferencaAtual)}</td>
-                      <td><span className={statusClassName(item.classificacaoAtual)}>{item.classificacaoAtual}</span></td>
+                      <td><span className={statusClassName(item.classificacaoAtual)} style={item.classificacaoAtual === 'Sem diferença' ? { background: '#dcfce7', color: '#166534' } : undefined}>{item.classificacaoAtual}</span></td>
                       <td>{item.situacaoValidacao}</td>
                       <td>
                         <div className="actions-cell wrap-actions">
