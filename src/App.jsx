@@ -24,7 +24,7 @@ const tabs = [
   { id: 'relatorios', label: 'PDF / Relatórios' }
 ];
 
-const COUNT_TYPES = ['1ª contagem', '2ª contagem', '3ª contagem', 'Recontagem'];
+const COUNT_TYPES = ['1ª contagem', 'Recontagem'];
 
 function loadState() {
   try {
@@ -118,6 +118,36 @@ function mapTeamToForm(equipe) {
 
 function getAlmoxName(almoxId) {
   return ALMOXARIFADOS.find((item) => item.id === almoxId)?.nome || '-';
+}
+
+function getAlmoxLabel(almoxId) {
+  const almox = ALMOXARIFADOS.find((item) => item.id === almoxId);
+  return almox ? `${almox.codigoCompleto} — ${almox.nome}` : '-';
+}
+
+function getNextTaskRound(tarefas, almoxId, tipoContagem) {
+  if (tipoContagem === '1ª contagem') return 1;
+  const rounds = tarefas
+    .filter((tarefa) => tarefa.almoxarifadoId === almoxId)
+    .map((tarefa) => Number(tarefa.rodada || (tarefa.tipoContagem === '1ª contagem' ? 1 : 2)) || 1);
+  const currentMax = rounds.length ? Math.max(...rounds) : 1;
+  return Math.max(2, currentMax + 1);
+}
+
+function buildTaskTitle({ tarefas, almoxId, tipoContagem, equipeNome = '', forcedRound = null }) {
+  const almoxLabel = getAlmoxLabel(almoxId);
+  const rodada = forcedRound ?? getNextTaskRound(tarefas, almoxId, tipoContagem);
+  const recontagemNumero = tipoContagem === 'Recontagem' ? Math.max(1, rodada - 1) : 0;
+  const baseTitle =
+    tipoContagem === '1ª contagem'
+      ? `1ª contagem — ${almoxLabel}`
+      : `Recontagem ${recontagemNumero} — ${almoxLabel}`;
+
+  return {
+    rodada,
+    recontagemNumero,
+    titulo: equipeNome ? `${baseTitle} — ${equipeNome}` : baseTitle
+  };
 }
 
 function getAlmoxIdByCode(code) {
@@ -570,22 +600,34 @@ export default function App() {
     }
 
     const lots = splitItemsEqually(planningAvailableItems, selectedTeams.length);
-    const tarefasNovas = selectedTeams.map((team, index) => ({
-      id: uid('tar'),
-      campanhaId: campanhaAtual.id,
-      almoxarifadoId: planningForm.almoxarifadoId,
-      titulo: `1ª contagem - ${getAlmoxName(planningForm.almoxarifadoId)} - ${team.nome}`,
-      tipoContagem: '1ª contagem',
-      status: 'Pendente',
-      dataInicio: '',
-      dataFim: '',
-      observacao: `Lote automático V4.5 gerado para ${team.nome}.`,
-      itemIds: (lots[index] || []).map((item) => item.id),
-      equipeId: team.id,
-      equipeNome: team.nome,
-      equipeTipo: 'fixa',
-      equipeIntegrantes: team.integrantes.map((item) => item.nome)
-    })).filter((tarefa) => tarefa.itemIds.length);
+    const tarefasNovas = selectedTeams.map((team, index) => {
+      const naming = buildTaskTitle({
+        tarefas: state.tarefas,
+        almoxId: planningForm.almoxarifadoId,
+        tipoContagem: '1ª contagem',
+        equipeNome: team.nome,
+        forcedRound: 1
+      });
+
+      return {
+        id: uid('tar'),
+        campanhaId: campanhaAtual.id,
+        almoxId: planningForm.almoxarifadoId,
+        titulo: naming.titulo,
+        tipoContagem: '1ª contagem',
+        rodada: naming.rodada,
+        recontagemNumero: naming.recontagemNumero,
+        status: 'Pendente',
+        dataInicio: '',
+        dataFim: '',
+        observacao: `Lote automático V4.5 gerado para ${team.nome}.`,
+        itemIds: (lots[index] || []).map((item) => item.id),
+        equipeId: team.id,
+        equipeNome: team.nome,
+        equipeTipo: 'fixa',
+        equipeIntegrantes: team.integrantes.map((item) => item.nome)
+      };
+    }).filter((tarefa) => tarefa.itemIds.length);
 
     if (!tarefasNovas.length) {
       alert('Não foi possível gerar lotes com os itens disponíveis.');
@@ -659,12 +701,21 @@ function handleCreateTask(event) {
     }
   }
 
+  const naming = buildTaskTitle({
+    tarefas: state.tarefas,
+    almoxId: taskForm.almoxarifadoId,
+    tipoContagem: taskForm.tipoContagem,
+    equipeNome: teamInfo.equipeNome
+  });
+
   const tarefa = {
     id: uid('tar'),
     campanhaId: campanhaAtual.id,
-    almoxarifadoId: taskForm.almoxarifadoId,
-    titulo: taskForm.titulo || `${taskForm.tipoContagem} - ${getAlmoxName(taskForm.almoxarifadoId)}`,
+    almoxId: taskForm.almoxarifadoId,
+    titulo: taskForm.titulo || naming.titulo,
     tipoContagem: taskForm.tipoContagem,
+    rodada: naming.rodada,
+    recontagemNumero: naming.recontagemNumero,
     status: 'Pendente',
     dataInicio: '',
     dataFim: '',
@@ -954,10 +1005,11 @@ function deleteTask(taskId) {
 
   function getHistoricoContagens(itemId) {
     const registros = [...(registrosPorItem.get(itemId) || [])].sort((a, b) => new Date(a.dataHoraRegistro) - new Date(b.dataHoraRegistro));
+    const primeira = registros[0]?.quantidadeContada ?? '';
+    const recontagens = registros.slice(1).map((registro) => registro.quantidadeContada);
     return {
-      primeira: registros[0]?.quantidadeContada ?? '',
-      segunda: registros[1]?.quantidadeContada ?? '',
-      terceira: registros[2]?.quantidadeContada ?? '',
+      primeira,
+      recontagens,
       ultimaClassificacao: registros[registros.length - 1]?.classificacao || 'Sem registro'
     };
   }
@@ -970,7 +1022,8 @@ function deleteTask(taskId) {
         .sort((a, b) => a.codigoItem.localeCompare(b.codigoItem))
         .map((item) => {
           const historico = getHistoricoContagens(item.id);
-          const ultimaContagem = historico.terceira !== '' ? Number(historico.terceira) : historico.segunda !== '' ? Number(historico.segunda) : historico.primeira !== '' ? Number(historico.primeira) : '';
+          const registros = [historico.primeira, ...historico.recontagens].filter((valor) => valor !== '');
+          const ultimaContagem = registros.length ? Number(registros[registros.length - 1]) : '';
           const saldoTeorico = Number(item.saldoTeorico || 0);
           const diferencaTotal = ultimaContagem === '' ? '' : Number(ultimaContagem) - saldoTeorico;
           return {
@@ -978,8 +1031,8 @@ function deleteTask(taskId) {
             descricao: item.descricaoItem,
             saldoTeorico,
             primeira: historico.primeira === '' ? '' : Number(historico.primeira),
-            segunda: historico.segunda === '' ? '' : Number(historico.segunda),
-            terceira: historico.terceira === '' ? '' : Number(historico.terceira),
+            recontagem1: historico.recontagens[0] === undefined || historico.recontagens[0] === '' ? '' : Number(historico.recontagens[0]),
+            recontagem2: historico.recontagens[1] === undefined || historico.recontagens[1] === '' ? '' : Number(historico.recontagens[1]),
             diferencaTotal,
             classificacaoFinal: historico.ultimaClassificacao
           };
@@ -1005,8 +1058,8 @@ function deleteTask(taskId) {
                 <td>${item.descricao}</td>
                 <td class="num">${formatNumber(item.saldoTeorico)}</td>
                 <td class="num">${item.primeira === '' ? '' : formatNumber(item.primeira)}</td>
-                <td class="num">${item.segunda === '' ? '' : formatNumber(item.segunda)}</td>
-                <td class="num">${item.terceira === '' ? '' : formatNumber(item.terceira)}</td>
+                <td class="num">${item.recontagem1 === '' ? '' : formatNumber(item.recontagem1)}</td>
+                <td class="num">${item.recontagem2 === '' ? '' : formatNumber(item.recontagem2)}</td>
                 <td class="num">${item.diferencaTotal === '' ? '' : formatNumber(item.diferencaTotal)}</td>
                 <td>${item.classificacaoFinal}</td>
               </tr>`).join('')}
@@ -1034,8 +1087,8 @@ function deleteTask(taskId) {
         Descrição: item.descricao,
         'Saldo teórico': item.saldoTeorico,
         '1ª contagem': item.primeira,
-        '2ª contagem': item.segunda,
-        '3ª contagem': item.terceira,
+        'Recontagem 1': item.recontagem1,
+        'Recontagem 2': item.recontagem2,
         'Diferença total': item.diferencaTotal,
         'Classificação final': item.classificacaoFinal
       }))
