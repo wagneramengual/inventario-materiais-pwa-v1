@@ -24,7 +24,7 @@ const tabs = [
   { id: 'relatorios', label: 'PDF / Relatórios' }
 ];
 
-const COUNT_TYPES = ['1ª contagem', 'Recontagem'];
+const COUNT_TYPES = ['1ª contagem', '2ª contagem', '3ª contagem', 'Recontagem'];
 
 function loadState() {
   try {
@@ -96,58 +96,8 @@ function parseMembersText(text) {
     });
 }
 
-function buildMembersFromShortFields(teamForm) {
-  return [teamForm.integrante1, teamForm.integrante2, teamForm.integrante3, teamForm.integrante4]
-    .map((nome) => String(nome || '').trim())
-    .filter(Boolean)
-    .map((nome) => ({ id: uid('int'), nome, matriculaLogin: '', funcao: 'Contador' }));
-}
-
-function mapTeamToForm(equipe) {
-  const nomes = (equipe.integrantes || []).map((item) => item.nome || '');
-  return {
-    id: equipe.id,
-    nome: equipe.nome,
-    observacoes: equipe.observacoes || '',
-    integrante1: nomes[0] || '',
-    integrante2: nomes[1] || '',
-    integrante3: nomes[2] || '',
-    integrante4: nomes[3] || ''
-  };
-}
-
 function getAlmoxName(almoxId) {
   return ALMOXARIFADOS.find((item) => item.id === almoxId)?.nome || '-';
-}
-
-function getAlmoxLabel(almoxId) {
-  const almox = ALMOXARIFADOS.find((item) => item.id === almoxId);
-  return almox ? `${almox.codigoCompleto} — ${almox.nome}` : '-';
-}
-
-function getNextTaskRound(tarefas, almoxId, tipoContagem) {
-  if (tipoContagem === '1ª contagem') return 1;
-  const rounds = tarefas
-    .filter((tarefa) => tarefa.almoxarifadoId === almoxId)
-    .map((tarefa) => Number(tarefa.rodada || (tarefa.tipoContagem === '1ª contagem' ? 1 : 2)) || 1);
-  const currentMax = rounds.length ? Math.max(...rounds) : 1;
-  return Math.max(2, currentMax + 1);
-}
-
-function buildTaskTitle({ tarefas, almoxId, tipoContagem, equipeNome = '', forcedRound = null }) {
-  const almoxLabel = getAlmoxLabel(almoxId);
-  const rodada = forcedRound ?? getNextTaskRound(tarefas, almoxId, tipoContagem);
-  const recontagemNumero = tipoContagem === 'Recontagem' ? Math.max(1, rodada - 1) : 0;
-  const baseTitle =
-    tipoContagem === '1ª contagem'
-      ? `1ª contagem — ${almoxLabel}`
-      : `Recontagem ${recontagemNumero} — ${almoxLabel}`;
-
-  return {
-    rodada,
-    recontagemNumero,
-    titulo: equipeNome ? `${baseTitle} — ${equipeNome}` : baseTitle
-  };
 }
 
 function getAlmoxIdByCode(code) {
@@ -169,12 +119,7 @@ function classifyDifference(diferenca, saldoTeorico, config) {
 }
 
 function statusClassName(value) {
-  const normalized = String(value || 'sem-registro')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s+/g, '-')
-    .toLowerCase();
-  return `status-badge ${normalized}`;
+  return `status-badge ${String(value || 'sem-registro').replace(/\s+/g, '-').toLowerCase()}`;
 }
 
 function Card({ title, value, subtitle }) {
@@ -295,7 +240,7 @@ export default function App() {
   const [selectedRecountItemIds, setSelectedRecountItemIds] = useState([]);
   const [countDrafts, setCountDrafts] = useState({});
   const [currentTaskId, setCurrentTaskId] = useState('');
-  const [teamForm, setTeamForm] = useState({ id: '', nome: '', observacoes: '', integrante1: '', integrante2: '', integrante3: '', integrante4: '' });
+  const [teamForm, setTeamForm] = useState({ id: '', nome: '', observacoes: '', integrantesTexto: '' });
   const [taskForm, setTaskForm] = useState({
     titulo: '',
     almoxarifadoId: 'almox-001',
@@ -330,7 +275,7 @@ export default function App() {
   const tasksById = useMemo(() => Object.fromEntries(state.tarefas.map((tarefa) => [tarefa.id, tarefa])), [state.tarefas]);
 
   const openTasksForCounting = useMemo(
-    () => state.tarefas.filter((tarefa) => !['Concluída', 'Cancelada', 'Validada', 'Validada com ressalvas'].includes(tarefa.status)),
+    () => state.tarefas.filter((tarefa) => !['Concluída', 'Cancelada'].includes(tarefa.status)),
     [state.tarefas]
   );
 
@@ -413,24 +358,27 @@ export default function App() {
 
   const taskItems = useMemo(() => {
     if (!selectedTask) return [];
-    return itensComStatus.filter((item) => selectedTask.itemIds?.includes(item.id));
-  }, [selectedTask, itensComStatus]);
+    const countedIdsInTask = new Set(
+      state.registros
+        .filter((registro) => registro.tarefaId === selectedTask.id)
+        .map((registro) => registro.itemId)
+    );
+    return itensComStatus.filter(
+      (item) => selectedTask.itemIds?.includes(item.id) && !countedIdsInTask.has(item.id)
+    );
+  }, [selectedTask, itensComStatus, state.registros]);
 
   function updateState(updater) {
     setState((prev) => updater(prev));
   }
 
   function resetTeamForm() {
-    setTeamForm({ id: '', nome: '', observacoes: '', integrante1: '', integrante2: '', integrante3: '', integrante4: '' });
+    setTeamForm({ id: '', nome: '', observacoes: '', integrantesTexto: '' });
   }
 
   function handleCreateOrUpdateTeam(event) {
     event.preventDefault();
-    const integrantes = buildMembersFromShortFields(teamForm);
-    if (!integrantes.length) {
-      alert('Informa ao menos um integrante da equipe.');
-      return;
-    }
+    const integrantes = parseMembersText(teamForm.integrantesTexto);
     const payload = {
       id: teamForm.id || uid('eq'),
       nome: teamForm.nome,
@@ -446,7 +394,12 @@ export default function App() {
   }
 
   function editTeam(equipe) {
-    setTeamForm(mapTeamToForm(equipe));
+    setTeamForm({
+      id: equipe.id,
+      nome: equipe.nome,
+      observacoes: equipe.observacoes,
+      integrantesTexto: buildMembersText(equipe.integrantes)
+    });
     setActiveTab('equipes');
   }
 
@@ -469,7 +422,7 @@ export default function App() {
   function activeItemIdsInOpenTasks(almoxarifadoId) {
     return new Set(
       state.tarefas
-        .filter((tarefa) => tarefa.almoxarifadoId === almoxarifadoId && !['Concluída', 'Cancelada', 'Validada', 'Validada com ressalvas'].includes(tarefa.status))
+        .filter((tarefa) => tarefa.almoxarifadoId === almoxarifadoId && !['Concluída', 'Cancelada'].includes(tarefa.status))
         .flatMap((tarefa) => tarefa.itemIds || [])
     );
   }
@@ -477,7 +430,7 @@ export default function App() {
   function openTaskTeamIds() {
     return new Set(
       state.tarefas
-        .filter((tarefa) => !['Concluída', 'Cancelada', 'Validada', 'Validada com ressalvas'].includes(tarefa.status) && tarefa.equipeId)
+        .filter((tarefa) => !['Concluída', 'Cancelada'].includes(tarefa.status) && tarefa.equipeId)
         .map((tarefa) => tarefa.equipeId)
     );
   }
@@ -501,19 +454,24 @@ export default function App() {
     const blocked = activeItemIdsInOpenTasks(taskForm.almoxarifadoId);
 
     if (taskForm.tipoContagem === 'Recontagem') {
-      const idsSelecionados = selectedRecountItemIds.length ? selectedRecountItemIds : selectedItemIds;
-      return base.filter((item) => idsSelecionados.includes(item.id));
+      const pendingIds = new Set(
+        state.analises
+          .filter((analise) => analise.pendenteRecontagem)
+          .map((analise) => analise.itemId)
+      );
+      const idsSelecionados = new Set([
+        ...selectedRecountItemIds,
+        ...selectedItemIds,
+        ...pendingIds
+      ]);
+      return base.filter((item) => idsSelecionados.has(item.id));
     }
 
     let available = base.filter((item) => !blocked.has(item.id));
-    if (taskForm.scope === 'somentePendentes') {
-      available = available.filter((item) => item.statusContagem === 'Pendente');
-    }
-    if (taskForm.scope === 'selecaoManual') {
-      available = available.filter((item) => selectedItemIds.includes(item.id));
-    }
+    if (taskForm.scope === 'somentePendentes') available = available.filter((item) => item.statusContagem === 'Pendente');
+    if (taskForm.scope === 'selecaoManual') available = available.filter((item) => selectedItemIds.includes(item.id));
     return available;
-  }, [itensComStatus, taskForm, selectedItemIds, selectedRecountItemIds, state.tarefas]);
+  }, [itensComStatus, taskForm, selectedItemIds, selectedRecountItemIds, state.tarefas, state.analises]);
 
   useEffect(() => {
     if (taskForm.tipoContagem === 'Recontagem') return;
@@ -600,34 +558,22 @@ export default function App() {
     }
 
     const lots = splitItemsEqually(planningAvailableItems, selectedTeams.length);
-    const tarefasNovas = selectedTeams.map((team, index) => {
-      const naming = buildTaskTitle({
-        tarefas: state.tarefas,
-        almoxId: planningForm.almoxarifadoId,
-        tipoContagem: '1ª contagem',
-        equipeNome: team.nome,
-        forcedRound: 1
-      });
-
-      return {
-        id: uid('tar'),
-        campanhaId: campanhaAtual.id,
-        almoxId: planningForm.almoxarifadoId,
-        titulo: naming.titulo,
-        tipoContagem: '1ª contagem',
-        rodada: naming.rodada,
-        recontagemNumero: naming.recontagemNumero,
-        status: 'Pendente',
-        dataInicio: '',
-        dataFim: '',
-        observacao: `Lote automático V4.5 gerado para ${team.nome}.`,
-        itemIds: (lots[index] || []).map((item) => item.id),
-        equipeId: team.id,
-        equipeNome: team.nome,
-        equipeTipo: 'fixa',
-        equipeIntegrantes: team.integrantes.map((item) => item.nome)
-      };
-    }).filter((tarefa) => tarefa.itemIds.length);
+    const tarefasNovas = selectedTeams.map((team, index) => ({
+      id: uid('tar'),
+      campanhaId: campanhaAtual.id,
+      almoxarifadoId: planningForm.almoxarifadoId,
+      titulo: `1ª contagem - ${getAlmoxName(planningForm.almoxarifadoId)} - ${team.nome}`,
+      tipoContagem: '1ª contagem',
+      status: 'Pendente',
+      dataInicio: '',
+      dataFim: '',
+      observacao: `Lote automático V4.5 gerado para ${team.nome}.`,
+      itemIds: (lots[index] || []).map((item) => item.id),
+      equipeId: team.id,
+      equipeNome: team.nome,
+      equipeTipo: 'fixa',
+      equipeIntegrantes: team.integrantes.map((item) => item.nome)
+    })).filter((tarefa) => tarefa.itemIds.length);
 
     if (!tarefasNovas.length) {
       alert('Não foi possível gerar lotes com os itens disponíveis.');
@@ -701,21 +647,12 @@ function handleCreateTask(event) {
     }
   }
 
-  const naming = buildTaskTitle({
-    tarefas: state.tarefas,
-    almoxId: taskForm.almoxarifadoId,
-    tipoContagem: taskForm.tipoContagem,
-    equipeNome: teamInfo.equipeNome
-  });
-
   const tarefa = {
     id: uid('tar'),
     campanhaId: campanhaAtual.id,
-    almoxId: taskForm.almoxarifadoId,
-    titulo: taskForm.titulo || naming.titulo,
+    almoxarifadoId: taskForm.almoxarifadoId,
+    titulo: taskForm.titulo || `${taskForm.tipoContagem} - ${getAlmoxName(taskForm.almoxarifadoId)}`,
     tipoContagem: taskForm.tipoContagem,
-    rodada: naming.rodada,
-    recontagemNumero: naming.recontagemNumero,
     status: 'Pendente',
     dataInicio: '',
     dataFim: '',
@@ -726,7 +663,12 @@ function handleCreateTask(event) {
 
   updateState((prev) => ({
     ...prev,
-    tarefas: [tarefa, ...prev.tarefas]
+    tarefas: [tarefa, ...prev.tarefas],
+    analises: prev.analises.map((analise) =>
+      itemIds.includes(analise.itemId)
+        ? { ...analise, pendenteRecontagem: false }
+        : analise
+    )
   }));
 
   setTaskForm((prev) => ({
@@ -737,6 +679,7 @@ function handleCreateTask(event) {
   }));
 
   setCurrentTaskId(tarefa.id);
+  setSelectedItemIds([]);
   setSelectedRecountItemIds([]);
   setActiveTab('tarefas');
 }
@@ -897,13 +840,15 @@ function deleteTask(taskId) {
     }
 
     if (action === 'validar') {
-      updateState((prev) => {
-        const analises = items.reduce((acc, item) => {
+      updateState((prev) => ({
+        ...prev,
+        analises: items.reduce((acc, item) => {
           const existing = acc.find((analise) => analise.itemId === item.id);
           if (existing) {
             existing.analiseFinal = 'Contagem validada pelo chefe de inventário.';
             existing.situacaoDocumental = 'Validado';
             existing.observacaoGerencial = 'Item validado sem necessidade de nova lista.';
+            existing.pendenteRecontagem = false;
             return acc;
           }
           acc.push({
@@ -912,30 +857,12 @@ function deleteTask(taskId) {
             preAnalise: `Validação da ${item.ultimaTarefa?.tipoContagem || 'contagem'}.`,
             analiseFinal: 'Contagem validada pelo chefe de inventário.',
             situacaoDocumental: 'Validado',
-            observacaoGerencial: 'Item validado sem necessidade de nova lista.'
+            observacaoGerencial: 'Item validado sem necessidade de nova lista.',
+            pendenteRecontagem: false
           });
           return acc;
-        }, [...prev.analises]);
-
-        const tarefas = prev.tarefas.map((tarefa) => {
-          const itemIds = tarefa.itemIds || [];
-          const hasAny = itemIds.some((itemId) => analises.find((analise) => analise.itemId === itemId));
-          if (!hasAny) return tarefa;
-
-          const hasRecount = itemIds.some((itemId) => analises.find((analise) => analise.itemId === itemId)?.situacaoDocumental === 'Em recontagem');
-          const hasValidated = itemIds.some((itemId) => analises.find((analise) => analise.itemId === itemId)?.situacaoDocumental === 'Validado');
-
-          if (hasValidated && hasRecount) {
-            return { ...tarefa, status: 'Validada com ressalvas' };
-          }
-          if (hasValidated && !hasRecount) {
-            return { ...tarefa, status: 'Validada' };
-          }
-          return tarefa;
-        });
-
-        return { ...prev, analises, tarefas };
-      });
+        }, [...prev.analises])
+      }));
       setSelectedRecountItemIds([]);
       return;
     }
@@ -967,15 +894,17 @@ function deleteTask(taskId) {
       equipeModo: fallbackTeam ? 'fixa' : 'mista',
       integrantesMistos: []
     });
-    setSelectedItemIds(orderedItems.map((item) => item.id));
-    setSelectedRecountItemIds(orderedItems.map((item) => item.id));
-    updateState((prev) => {
-      const analises = orderedItems.reduce((acc, item) => {
+    setSelectedItemIds((prev) => [...new Set([...prev, ...orderedItems.map((item) => item.id)])]);
+    setSelectedRecountItemIds((prev) => [...new Set([...prev, ...orderedItems.map((item) => item.id)])]);
+    updateState((prev) => ({
+      ...prev,
+      analises: orderedItems.reduce((acc, item) => {
         const existing = acc.find((analise) => analise.itemId === item.id);
         if (existing) {
           existing.analiseFinal = '';
           existing.situacaoDocumental = 'Em recontagem';
           existing.observacaoGerencial = 'Lote enviado para recontagem.';
+          existing.pendenteRecontagem = true;
           return acc;
         }
         acc.push({
@@ -984,32 +913,21 @@ function deleteTask(taskId) {
           preAnalise: `Divergência identificada na ${item.ultimaTarefa?.tipoContagem || 'contagem'}.`,
           analiseFinal: '',
           situacaoDocumental: 'Em recontagem',
-          observacaoGerencial: 'Lote enviado para recontagem.'
+          observacaoGerencial: 'Lote enviado para recontagem.',
+          pendenteRecontagem: true
         });
         return acc;
-      }, [...prev.analises]);
-
-      const tarefas = prev.tarefas.map((tarefa) => {
-        const itemIds = tarefa.itemIds || [];
-        const hasRecount = itemIds.some((itemId) => analises.find((analise) => analise.itemId === itemId)?.situacaoDocumental === 'Em recontagem');
-        const hasValidated = itemIds.some((itemId) => analises.find((analise) => analise.itemId === itemId)?.situacaoDocumental === 'Validado');
-        if (hasValidated && hasRecount) return { ...tarefa, status: 'Validada com ressalvas' };
-        if (!hasValidated && hasRecount && orderedItems.some((item) => itemIds.includes(item.id))) return { ...tarefa, status: 'Validada com ressalvas' };
-        return tarefa;
-      });
-
-      return { ...prev, analises, tarefas };
-    });
+      }, [...prev.analises])
+    }));
     setActiveTab('tarefas');
   }
 
   function getHistoricoContagens(itemId) {
     const registros = [...(registrosPorItem.get(itemId) || [])].sort((a, b) => new Date(a.dataHoraRegistro) - new Date(b.dataHoraRegistro));
-    const primeira = registros[0]?.quantidadeContada ?? '';
-    const recontagens = registros.slice(1).map((registro) => registro.quantidadeContada);
     return {
-      primeira,
-      recontagens,
+      primeira: registros[0]?.quantidadeContada ?? '',
+      segunda: registros[1]?.quantidadeContada ?? '',
+      terceira: registros[2]?.quantidadeContada ?? '',
       ultimaClassificacao: registros[registros.length - 1]?.classificacao || 'Sem registro'
     };
   }
@@ -1022,18 +940,13 @@ function deleteTask(taskId) {
         .sort((a, b) => a.codigoItem.localeCompare(b.codigoItem))
         .map((item) => {
           const historico = getHistoricoContagens(item.id);
-          const registros = [historico.primeira, ...historico.recontagens].filter((valor) => valor !== '');
-          const ultimaContagem = registros.length ? Number(registros[registros.length - 1]) : '';
-          const saldoTeorico = Number(item.saldoTeorico || 0);
-          const diferencaTotal = ultimaContagem === '' ? '' : Number(ultimaContagem) - saldoTeorico;
           return {
             codigo: item.codigoItem,
             descricao: item.descricaoItem,
-            saldoTeorico,
+            saldoTeorico: Number(item.saldoTeorico || 0),
             primeira: historico.primeira === '' ? '' : Number(historico.primeira),
-            recontagem1: historico.recontagens[0] === undefined || historico.recontagens[0] === '' ? '' : Number(historico.recontagens[0]),
-            recontagem2: historico.recontagens[1] === undefined || historico.recontagens[1] === '' ? '' : Number(historico.recontagens[1]),
-            diferencaTotal,
+            segunda: historico.segunda === '' ? '' : Number(historico.segunda),
+            terceira: historico.terceira === '' ? '' : Number(historico.terceira),
             classificacaoFinal: historico.ultimaClassificacao
           };
         })
@@ -1058,9 +971,8 @@ function deleteTask(taskId) {
                 <td>${item.descricao}</td>
                 <td class="num">${formatNumber(item.saldoTeorico)}</td>
                 <td class="num">${item.primeira === '' ? '' : formatNumber(item.primeira)}</td>
-                <td class="num">${item.recontagem1 === '' ? '' : formatNumber(item.recontagem1)}</td>
-                <td class="num">${item.recontagem2 === '' ? '' : formatNumber(item.recontagem2)}</td>
-                <td class="num">${item.diferencaTotal === '' ? '' : formatNumber(item.diferencaTotal)}</td>
+                <td class="num">${item.segunda === '' ? '' : formatNumber(item.segunda)}</td>
+                <td class="num">${item.terceira === '' ? '' : formatNumber(item.terceira)}</td>
                 <td>${item.classificacaoFinal}</td>
               </tr>`).join('')}
           </tbody>
@@ -1087,9 +999,8 @@ function deleteTask(taskId) {
         Descrição: item.descricao,
         'Saldo teórico': item.saldoTeorico,
         '1ª contagem': item.primeira,
-        'Recontagem 1': item.recontagem1,
-        'Recontagem 2': item.recontagem2,
-        'Diferença total': item.diferencaTotal,
+        '2ª contagem': item.segunda,
+        '3ª contagem': item.terceira,
         'Classificação final': item.classificacaoFinal
       }))
     ));
@@ -1304,14 +1215,11 @@ function deleteTask(taskId) {
         {activeTab === 'equipes' && (
           <section className="two-column-grid">
             <div className="card">
-              <SectionTitle title={teamForm.id ? 'Editar equipe' : 'Cadastrar equipe'} description="Informa os nomes dos integrantes em campos curtos." action={teamForm.id ? <button className="secondary-btn" onClick={resetTeamForm}>Cancelar</button> : null} />
+              <SectionTitle title={teamForm.id ? 'Editar equipe' : 'Cadastrar equipe'} description="Integrantes: um por linha, no formato Nome | Matrícula | Função." action={teamForm.id ? <button className="secondary-btn" onClick={resetTeamForm}>Cancelar</button> : null} />
               <form className="form-grid" onSubmit={handleCreateOrUpdateTeam}>
                 <label>Nome da equipe<input value={teamForm.nome} onChange={(e) => setTeamForm((prev) => ({ ...prev, nome: e.target.value }))} required /></label>
                 <label className="full-width">Observações<input value={teamForm.observacoes} onChange={(e) => setTeamForm((prev) => ({ ...prev, observacoes: e.target.value }))} /></label>
-                <label>Integrante 1<input value={teamForm.integrante1} onChange={(e) => setTeamForm((prev) => ({ ...prev, integrante1: e.target.value }))} /></label>
-                <label>Integrante 2<input value={teamForm.integrante2} onChange={(e) => setTeamForm((prev) => ({ ...prev, integrante2: e.target.value }))} /></label>
-                <label>Integrante 3<input value={teamForm.integrante3} onChange={(e) => setTeamForm((prev) => ({ ...prev, integrante3: e.target.value }))} /></label>
-                <label>Integrante 4<input value={teamForm.integrante4} onChange={(e) => setTeamForm((prev) => ({ ...prev, integrante4: e.target.value }))} /></label>
+                <label className="full-width">Integrantes<textarea rows="7" value={teamForm.integrantesTexto} onChange={(e) => setTeamForm((prev) => ({ ...prev, integrantesTexto: e.target.value }))} /></label>
                 <button className="primary-btn full-width" type="submit">Salvar equipe</button>
               </form>
             </div>
@@ -1351,7 +1259,7 @@ function deleteTask(taskId) {
                 <table>
                   <thead><tr><th>Código</th><th>Descrição</th><th>Almox</th><th>Saldo</th><th>Status</th><th>Classificação</th></tr></thead>
                   <tbody>
-                    {filteredItems.map((item) => <tr key={item.id}><td>{item.codigoItem}</td><td>{item.descricaoItem}</td><td>{getAlmoxName(item.almoxarifadoId)}</td><td>{formatNumber(item.saldoTeorico)}</td><td>{item.statusContagem}</td><td><span className={statusClassName(item.classificacaoAtual)} style={item.classificacaoAtual === 'Sem diferença' ? { background: '#dcfce7', color: '#166534' } : undefined}>{item.classificacaoAtual}</span></td></tr>)}
+                    {filteredItems.map((item) => <tr key={item.id}><td>{item.codigoItem}</td><td>{item.descricaoItem}</td><td>{getAlmoxName(item.almoxarifadoId)}</td><td>{formatNumber(item.saldoTeorico)}</td><td>{item.statusContagem}</td><td><span className={statusClassName(item.classificacaoAtual)}>{item.classificacaoAtual}</span></td></tr>)}
                   </tbody>
                 </table>
               </div>
@@ -1536,7 +1444,7 @@ function deleteTask(taskId) {
                       <td>{item.descricaoItem}</td>
                       <td>{ALMOXARIFADOS.find((almox) => almox.id === item.almoxarifadoId)?.codigoCompleto || ''} — {getAlmoxName(item.almoxarifadoId)}</td>
                       <td>{formatNumber(item.diferencaAtual)}</td>
-                      <td><span className={statusClassName(item.classificacaoAtual)} style={item.classificacaoAtual === 'Sem diferença' ? { background: '#dcfce7', color: '#166534' } : undefined}>{item.classificacaoAtual}</span></td>
+                      <td><span className={statusClassName(item.classificacaoAtual)}>{item.classificacaoAtual}</span></td>
                       <td>{item.situacaoValidacao}</td>
                       <td>
                         <div className="actions-cell wrap-actions">
