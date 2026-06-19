@@ -450,10 +450,10 @@ export default function App() {
   }
 
   const availableItemsForTask = useMemo(() => {
-    const base = itensComStatus.filter((item) => item.almoxarifadoId === taskForm.almoxarifadoId);
-    const blocked = activeItemIdsInOpenTasks(taskForm.almoxarifadoId);
-
     if (taskForm.tipoContagem === 'Recontagem') {
+      // Para recontagem: busca em TODOS os itens (qualquer almoxarifado compatível com o form),
+      // unindo os marcados como pendenteRecontagem nas análises + os selecionados manualmente.
+      // Não aplica o filtro de "blocked" pois o item pode ainda estar em tarefa anterior.
       const pendingIds = new Set(
         state.analises
           .filter((analise) => analise.pendenteRecontagem)
@@ -464,9 +464,16 @@ export default function App() {
         ...selectedItemIds,
         ...pendingIds
       ]);
-      return base.filter((item) => idsSelecionados.has(item.id));
+      // Filtra por almoxarifado somente se já houver um definido no form
+      return itensComStatus.filter((item) => {
+        if (!idsSelecionados.has(item.id)) return false;
+        if (taskForm.almoxarifadoId && item.almoxarifadoId !== taskForm.almoxarifadoId) return false;
+        return true;
+      });
     }
 
+    const base = itensComStatus.filter((item) => item.almoxarifadoId === taskForm.almoxarifadoId);
+    const blocked = activeItemIdsInOpenTasks(taskForm.almoxarifadoId);
     let available = base.filter((item) => !blocked.has(item.id));
     if (taskForm.scope === 'somentePendentes') available = available.filter((item) => item.statusContagem === 'Pendente');
     if (taskForm.scope === 'selecaoManual') available = available.filter((item) => selectedItemIds.includes(item.id));
@@ -894,8 +901,9 @@ function deleteTask(taskId) {
       equipeModo: fallbackTeam ? 'fixa' : 'mista',
       integrantesMistos: []
     });
-    setSelectedItemIds((prev) => [...new Set([...prev, ...orderedItems.map((item) => item.id)])]);
-    setSelectedRecountItemIds((prev) => [...new Set([...prev, ...orderedItems.map((item) => item.id)])]);
+    const recontagemIds = orderedItems.map((item) => item.id);
+    setSelectedItemIds((prev) => [...new Set([...prev, ...recontagemIds])]);
+    setSelectedRecountItemIds((prev) => [...new Set([...prev, ...recontagemIds])]);
     updateState((prev) => ({
       ...prev,
       analises: orderedItems.reduce((acc, item) => {
